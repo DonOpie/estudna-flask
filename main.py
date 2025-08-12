@@ -5,15 +5,14 @@ import os
 from flask import Flask
 
 # --- Konfigurace ---
-
 EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
 
 START_HOUR = 0
-END_HOUR = 5
+END_HOUR = 6
 
-LOW_LEVEL = 50
+LOW_LEVEL = 60
 HIGH_LEVEL = 70
 
 ON_DURATION = timedelta(minutes=30)
@@ -22,7 +21,6 @@ OFF_DURATION = timedelta(minutes=30)
 STATE_FILE = "stav.json"
 
 # --- HTTP helper funkce ---
-
 def httpPost(url, header={}, params={}, data={}):
     headers = {
         "Content-Type": "application/json",
@@ -45,7 +43,6 @@ def httpGet(url, header={}, params={}):
     return r.json()
 
 # --- Třída ThingsBoard ---
-
 class ThingsBoard:
     def __init__(self):
         self.server = 'https://cml.seapraha.cz'
@@ -82,18 +79,16 @@ class ThingsBoard:
         return response
 
 # --- Funkce pro čtení hladiny ---
-
 def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> float:
     tb = ThingsBoard()
     tb.login(username, password)
     devices = tb.getDevicesByName(f"%{serialNumber}")
     values = tb.getDeviceValues(devices[0]["id"]["id"], "ain1")
     level_m = float(values["ain1"][0]["value"])  # v metrech
-    level_cm = level_m * 100  # přepočet na cm
+    level_cm = level_m * 100
     return level_cm
 
 # --- Funkce pro ovládání výstupu ---
-
 def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: str, state: bool):
     tb = ThingsBoard()
     tb.login(username, password)
@@ -101,7 +96,6 @@ def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: s
     tb.setDeviceOutput(devices[0]["id"]["id"], output, state)
 
 # --- Ukládání a načítání stavu cyklu ---
-
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
@@ -113,17 +107,17 @@ def load_state():
         return json.load(f)
 
 # --- Hlavní logika řízení ---
-
 def main():
     now = datetime.now()
     hour = now.hour
 
-    if hour < START_HOUR or hour >= END_HOUR:
-        print("Mimo povolený čas (00:00–05:00)")
-        return "Mimo povolený čas (00:00–05:00)"
-
+    # Získáme a vypíšeme hladinu hned na začátku
     level = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
     print(f"Aktuální hladina: {level:.1f} cm")
+
+    if hour < START_HOUR or hour >= END_HOUR:
+        print("Mimo povolený čas (00:00–06:00)")
+        return f"Mimo povolený čas (00:00–06:00) – Hladina: {level:.1f} cm"
 
     state = load_state()
     until = datetime.fromisoformat(state["until"]) if state["until"] else None
@@ -132,33 +126,32 @@ def main():
         print(f"Hladina {level:.1f} cm je dostatečná, vypínám čerpadlo.")
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         save_state({"phase": "off", "until": None})
-        return "Hladina dostatečná, čerpadlo vypnuto."
+        return f"Hladina dostatečná ({level:.1f} cm), čerpadlo vypnuto."
 
     if state["phase"] == "on" and until and now < until:
         print(f"Čerpadlo běží, do {until}")
-        return f"Čerpadlo běží, do {until}"
+        return f"Čerpadlo běží, do {until} – Hladina: {level:.1f} cm"
     elif state["phase"] == "on":
         print("30 minut ON skončilo, vypínám čerpadlo.")
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
         save_state({"phase": "off", "until": next_until.isoformat()})
-        return "Skončila fáze ON, přecházím do pauzy."
+        return f"Skončila fáze ON, přecházím do pauzy – Hladina: {level:.1f} cm"
 
     if state["phase"] == "off" and until and now < until:
         print(f"Pauza, čekám do {until}")
-        return f"Pauza do {until}"
+        return f"Pauza do {until} – Hladina: {level:.1f} cm"
     elif state["phase"] == "off" and level < LOW_LEVEL:
         print("Hladina nízká, zapínám čerpadlo.")
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
         save_state({"phase": "on", "until": next_until.isoformat()})
-        return "Čerpadlo zapnuto – fáze ON začíná."
+        return f"Čerpadlo zapnuto – fáze ON začíná – Hladina: {level:.1f} cm"
 
     print("Čekám na pokles hladiny nebo konec pauzy.")
-    return "Čekám na pokles hladiny nebo konec pauzy."
+    return f"Čekám na pokles hladiny nebo konec pauzy – Hladina: {level:.1f} cm"
 
 # --- Flask server pro spouštění skriptu přes web ---
-
 app = Flask(__name__)
 
 @app.route("/")
