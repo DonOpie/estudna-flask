@@ -10,7 +10,7 @@ EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
 
-START_HOUR = 0
+START_HOUR = 21
 END_HOUR = 6
 
 LOW_LEVEL = 60
