@@ -10,8 +10,8 @@ EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
 
-START_HOUR = 21
-END_HOUR = 6
+START_HOUR = 21   # začátek povoleného čerpání
+END_HOUR = 6      # konec povoleného čerpání
 
 LOW_LEVEL = 60
 HIGH_LEVEL = 70
@@ -127,9 +127,16 @@ def main():
     level = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
     log(f"Aktuální hladina: {level:.1f} cm")
 
-    if hour < START_HOUR or hour >= END_HOUR:
-        log("Mimo povolený čas (00:00–06:00)")
-        return f"Mimo povolený čas (00:00–06:00) – Hladina: {level:.1f} cm"
+    # Kontrola časového okna (21:00–06:00)
+    if START_HOUR < END_HOUR:
+        in_allowed_time = START_HOUR <= hour < END_HOUR
+    else:
+        # interval přes půlnoc
+        in_allowed_time = (hour >= START_HOUR) or (hour < END_HOUR)
+
+    if not in_allowed_time:
+        log("Mimo povolený čas (21:00–06:00)")
+        return f"Mimo povolený čas (21:00–06:00) – Hladina: {level:.1f} cm"
 
     state = load_state()
     until = datetime.fromisoformat(state["until"]) if state["until"] else None
