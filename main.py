@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
+import traceback
 from flask import Flask
 
 # --- Konfigurace ---
@@ -10,8 +11,8 @@ EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
 
-START_HOUR = 0    # začátek povoleného čerpání (00:00)
-END_HOUR = 6      # konec povoleného čerpání (06:00)
+START_HOUR = 0    # 00:00
+END_HOUR = 6      # 06:00
 
 LOW_LEVEL = 60
 HIGH_LEVEL = 70
@@ -23,50 +24,66 @@ STATE_FILE = "stav.json"
 LOG_FILE = "log.txt"
 TOKEN_FILE = "token.json"
 
-# --- Funkce pro kontrolu a vyčištění logu každý den ---
-def check_and_clear_log():
-    if not os.path.exists(LOG_FILE):
-        return
-    today = datetime.now(ZoneInfo("Europe/Prague")).strftime("%Y-%m-%d")
-    try:
-        with open(LOG_FILE, "r") as f:
-            first_line = f.readline()
-        if first_line.startswith("[") and today not in first_line:
-            open(LOG_FILE, "w").close()  # smaže obsah logu
-    except:
-        pass
+TZ = ZoneInfo("Europe/Prague")
 
 # --- Logování ---
 def log(message):
-    now_str = datetime.now(ZoneInfo("Europe/Prague")).strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"[{now_str}] {message}\n"
-    print(log_line.strip())
-    with open(LOG_FILE, "a") as f:
-        f.write(log_line)
+    now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{now_str}] {message}\n"
+    print(line.strip())
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(line)
+    except Exception:
+        pass  # log nesmí shodit aplikaci
 
-# --- HTTP helper funkce s automatickým obnovením tokenu ---
-def http_request_with_retry(method, url, tb, header={}, params={}, data={}):
-    headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
+# --- Reset logu jednou denně (volitelné) ---
+def check_and_clear_log():
+    try:
+        if not os.path.exists(LOG_FILE):
+            return
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        with open(LOG_FILE, "r") as f:
+            first = f.readline()
+        if first.startswith("[") and today not in first:
+            open(LOG_FILE, "w").close()
+    except Exception:
+        pass
+
+# --- HTTP helper s retry při expiraci tokenu + lepší diagnostika ---
+def http_request_with_retry(method, url, tb, header=None, params=None, data=None):
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if header:
+        headers.update(header)
     try:
         if method == "POST":
-            r = requests.post(url, headers=headers, params=params, data=json.dumps(data))
+            r = requests.post(url, headers=headers, params=params or {}, data=json.dumps(data or {}), timeout=30)
         else:
-            r = requests.get(url, headers=headers, params=params)
-        if r.status_code == 401:  # token expiroval
-            log("Token expiroval – přihlašuji znovu.")
+            r = requests.get(url, headers=headers, params=params or {}, timeout=30)
+        if r.status_code == 401:
+            log("Token expiroval – provádím nový login.")
             tb.force_login(EMAIL, PASSWORD)
             headers["X-Authorization"] = f"Bearer {tb.userToken}"
             if method == "POST":
-                r = requests.post(url, headers=headers, params=params, data=json.dumps(data))
+                r = requests.post(url, headers=headers, params=params or {}, data=json.dumps(data or {}), timeout=30)
             else:
-                r = requests.get(url, headers=headers, params=params)
+                r = requests.get(url, headers=headers, params=params or {}, timeout=30)
         r.raise_for_status()
-        return r.json()
+        try:
+            return r.json()
+        except ValueError:
+            # server vrátil něco, co není JSON
+            log(f"Neočekávaný obsah odpovědi (není JSON). Status={r.status_code}, Text='{r.text[:200]}'")
+            raise
+    except requests.HTTPError as e:
+        txt = e.response.text if e.response is not None else ""
+        log(f"HTTPError {getattr(e.response, 'status_code', 'N/A')}: {txt[:300]}")
+        raise
     except Exception as e:
-        log(f"Chyba HTTP požadavku: {e}")
+        log(f"Chyba HTTP požadavku: {repr(e)}")
         raise
 
-# --- Třída ThingsBoard ---
+# --- ThingsBoard klient ---
 class ThingsBoard:
     def __init__(self):
         self.server = 'https://cml.seapraha.cz'
@@ -81,24 +98,27 @@ class ThingsBoard:
                     data = json.load(f)
                 self.userToken = data.get("token")
                 self.customerId = data.get("customerId")
-            except:
+            except Exception:
                 pass
 
     def _save_token(self):
-        with open(TOKEN_FILE, "w") as f:
-            json.dump({"token": self.userToken, "customerId": self.customerId}, f)
+        try:
+            with open(TOKEN_FILE, "w") as f:
+                json.dump({"token": self.userToken, "customerId": self.customerId}, f)
+        except Exception as e:
+            log(f"Uložení tokenu selhalo: {repr(e)}")
 
     def force_login(self, username, password):
-        """Vynucené nové přihlášení (při expiraci tokenu)"""
         url = f'{self.server}/api/auth/login'
-        response = requests.post(url, json={'username': username, 'password': password})
-        response.raise_for_status()
-        self.userToken = response.json()["token"]
+        r = requests.post(url, json={'username': username, 'password': password}, timeout=30)
+        r.raise_for_status()
+        self.userToken = r.json()["token"]
         url = f'{self.server}/api/auth/user'
-        response = requests.get(url, headers={'X-Authorization': f"Bearer {self.userToken}"})
-        response.raise_for_status()
-        self.customerId = response.json()["customerId"]["id"]
+        r = requests.get(url, headers={'X-Authorization': f"Bearer {self.userToken}"}, timeout=30)
+        r.raise_for_status()
+        self.customerId = r.json()["customerId"]["id"]
         self._save_token()
+        log("🔑 Nový login do API – token uložen.")
 
     def login(self, username, password):
         if not self.userToken or not self.customerId:
@@ -120,45 +140,72 @@ class ThingsBoard:
         url = f'{self.server}/api/rpc/twoway/{deviceId}'
         return http_request_with_retry("POST", url, self, {'X-Authorization': f"Bearer {self.userToken}"}, data=data)
 
-# --- Funkce pro čtení hladiny ---
-def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> float:
+# --- Čtení hladiny (bezpečně) ---
+def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str):
     tb = ThingsBoard()
     tb.login(username, password)
     devices = tb.getDevicesByName(f"%{serialNumber}")
-    values = tb.getDeviceValues(devices[0]["id"]["id"], "ain1")
-    return float(values["ain1"][0]["value"]) * 100
+    if not devices:
+        raise RuntimeError("Zařízení nenalezeno podle SN.")
+    device_id = devices[0]["id"]["id"]
 
-# --- Funkce pro ovládání výstupu ---
+    data = tb.getDeviceValues(device_id, "ain1")
+    # Bezpečné rozbalení telemetrie
+    try:
+        arr = data.get("ain1", [])
+        if not arr:
+            log("Varování: Telemetrie 'ain1' je prázdná.")
+            return None
+        val = arr[0].get("value")
+        if val is None:
+            log("Varování: 'ain1'[0] nemá klíč 'value'.")
+            return None
+        return float(val) * 100.0
+    except Exception as e:
+        log(f"Chyba při parsování telemetrie: {repr(e)}; data={str(data)[:200]}")
+        return None
+
+# --- Ovládání výstupu ---
 def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: str, state: bool):
     tb = ThingsBoard()
     tb.login(username, password)
     devices = tb.getDevicesByName(f"%{serialNumber}")
-    tb.setDeviceOutput(devices[0]["id"]["id"], output, state)
+    device_id = devices[0]["id"]["id"]
+    tb.setDeviceOutput(device_id, output, state)
 
-# --- Ukládání a načítání stavu cyklu ---
+# --- Stav ---
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception as e:
+        log(f"Uložení stavu selhalo: {repr(e)}")
 
 def load_state():
-    if not os.path.exists(STATE_FILE):
+    try:
+        if not os.path.exists(STATE_FILE):
+            return {"phase": "off", "until": None}
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"Načtení stavu selhalo: {repr(e)}")
         return {"phase": "off", "until": None}
-    with open(STATE_FILE, "r") as f:
-        return json.load(f)
 
-# --- Hlavní logika řízení ---
+# --- Hlavní logika ---
 def main():
     check_and_clear_log()
-    now = datetime.now(ZoneInfo("Europe/Prague"))
+    now = datetime.now(TZ)
     hour = now.hour
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
     level = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
+    if level is None:
+        log(f"Nelze načíst hladinu (čas serveru: {now_str})")
+        return f"[{now_str}] Nelze načíst hladinu – zkusím příště znovu."
+
     log(f"Aktuální hladina: {level:.1f} cm (čas serveru: {now_str})")
 
-    # Kontrola časového okna (00:00–06:00)
     in_allowed_time = START_HOUR <= hour < END_HOUR
-
     if not in_allowed_time:
         log("Mimo povolený čas (00:00–06:00)")
         return f"[{now_str}] Mimo povolený čas (00:00–06:00) – Hladina: {level:.1f} cm"
@@ -172,6 +219,7 @@ def main():
         save_state({"phase": "off", "until": None})
         return f"[{now_str}] Hladina dostatečná ({level:.1f} cm), čerpadlo vypnuto."
 
+    # Fáze ON
     if state["phase"] == "on" and until and now < until:
         log(f"Čerpadlo běží, do {until}")
         return f"[{now_str}] Čerpadlo běží, do {until} – Hladina: {level:.1f} cm"
@@ -182,6 +230,7 @@ def main():
         save_state({"phase": "off", "until": next_until.isoformat()})
         return f"[{now_str}] Skončila fáze ON, přecházím do pauzy – Hladina: {level:.1f} cm"
 
+    # Fáze OFF
     if state["phase"] == "off" and until and now < until:
         log(f"Pauza, čekám do {until}")
         return f"[{now_str}] Pauza do {until} – Hladina: {level:.1f} cm"
@@ -201,11 +250,17 @@ app = Flask(__name__)
 @app.route("/")
 def spustit():
     try:
-        vysledek = main()
-        return f"✅ Spuštěno: {vysledek}\n"
+        return f"✅ Spuštěno: {main()}\n"
     except Exception as e:
-        log(f"Chyba: {e}")
-        return f"❌ Chyba: {e}\n"
+        tb = traceback.format_exc()
+        log(f"Chyba: {repr(e)}\n{tb}")
+        # Krátký text ven, plný traceback jen do logu:
+        return f"❌ Chyba: {repr(e)}\n"
+
+@app.route("/health")
+def health():
+    now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    return f"OK {now}\n"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
