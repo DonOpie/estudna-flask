@@ -21,6 +21,7 @@ OFF_DURATION = timedelta(minutes=30)
 
 STATE_FILE = "stav.json"
 LOG_FILE = "log.txt"
+TOKEN_FILE = "token.json"
 
 # --- Funkce pro kontrolu a vyčištění logu každý den ---
 def check_and_clear_log():
@@ -43,19 +44,27 @@ def log(message):
     with open(LOG_FILE, "a") as f:
         f.write(log_line)
 
-# --- HTTP helper funkce ---
-def httpPost(url, header={}, params={}, data={}):
+# --- HTTP helper funkce s automatickým obnovením tokenu ---
+def http_request_with_retry(method, url, tb, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
-    data = json.dumps(data)
-    r = requests.post(url, data=data, headers=headers, params=params)
-    r.raise_for_status()
-    return r.json()
-
-def httpGet(url, header={}, params={}):
-    headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
-    r = requests.get(url, headers=headers, params=params)
-    r.raise_for_status()
-    return r.json()
+    try:
+        if method == "POST":
+            r = requests.post(url, headers=headers, params=params, data=json.dumps(data))
+        else:
+            r = requests.get(url, headers=headers, params=params)
+        if r.status_code == 401:  # token expiroval
+            log("Token expiroval – přihlašuji znovu.")
+            tb.force_login(EMAIL, PASSWORD)
+            headers["X-Authorization"] = f"Bearer {tb.userToken}"
+            if method == "POST":
+                r = requests.post(url, headers=headers, params=params, data=json.dumps(data))
+            else:
+                r = requests.get(url, headers=headers, params=params)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        log(f"Chyba HTTP požadavku: {e}")
+        raise
 
 # --- Třída ThingsBoard ---
 class ThingsBoard:
@@ -63,33 +72,53 @@ class ThingsBoard:
         self.server = 'https://cml.seapraha.cz'
         self.userToken = None
         self.customerId = None
+        self._load_token()
 
-    def login(self, username: str, password: str):
+    def _load_token(self):
+        if os.path.exists(TOKEN_FILE):
+            try:
+                with open(TOKEN_FILE, "r") as f:
+                    data = json.load(f)
+                self.userToken = data.get("token")
+                self.customerId = data.get("customerId")
+            except:
+                pass
+
+    def _save_token(self):
+        with open(TOKEN_FILE, "w") as f:
+            json.dump({"token": self.userToken, "customerId": self.customerId}, f)
+
+    def force_login(self, username, password):
+        """Vynucené nové přihlášení (při expiraci tokenu)"""
         url = f'{self.server}/api/auth/login'
-        response = httpPost(url, {}, data={'username': username, 'password': password})
-        self.userToken = response["token"]
+        response = requests.post(url, json={'username': username, 'password': password})
+        response.raise_for_status()
+        self.userToken = response.json()["token"]
         url = f'{self.server}/api/auth/user'
-        response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
-        self.customerId = response["customerId"]["id"]
+        response = requests.get(url, headers={'X-Authorization': f"Bearer {self.userToken}"})
+        response.raise_for_status()
+        self.customerId = response.json()["customerId"]["id"]
+        self._save_token()
+
+    def login(self, username, password):
+        if not self.userToken or not self.customerId:
+            self.force_login(username, password)
 
     def getDevicesByName(self, name: str):
         url = f'{self.server}/api/customer/{self.customerId}/devices'
         params = {'pageSize': 100, 'page': 0, "textSearch": name}
-        response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"}, params=params)
-        if response["totalElements"] < 1:
-            raise Exception(f"Device SN {name} has not been found!")
-        return response["data"]
+        return http_request_with_retry("GET", url, self, {'X-Authorization': f"Bearer {self.userToken}"}, params=params)
 
     def getDeviceValues(self, deviceId, keys):
         url = f'{self.server}/api/plugins/telemetry/DEVICE/{deviceId}/values/timeseries'
         params = {'keys': keys}
-        return httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"}, params=params)
+        return http_request_with_retry("GET", url, self, {'X-Authorization': f"Bearer {self.userToken}"}, params=params)
 
     def setDeviceOutput(self, deviceId, output: str, value: bool):
         method = "setDout1" if output == "OUT1" else "setDout2"
         data = {"method": method, "params": value}
         url = f'{self.server}/api/rpc/twoway/{deviceId}'
-        return httpPost(url, {'X-Authorization': f"Bearer {self.userToken}"}, {}, data)
+        return http_request_with_retry("POST", url, self, {'X-Authorization': f"Bearer {self.userToken}"}, data=data)
 
 # --- Funkce pro čtení hladiny ---
 def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> float:
@@ -122,21 +151,19 @@ def main():
     check_and_clear_log()
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Získáme hladinu hned na začátku
     level = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
-    log(f"Aktuální hladina: {level:.1f} cm")
+    log(f"Aktuální hladina: {level:.1f} cm (čas serveru: {now_str})")
 
-    # Kontrola časového okna (21:00–06:00)
     if START_HOUR < END_HOUR:
         in_allowed_time = START_HOUR <= hour < END_HOUR
     else:
-        # interval přes půlnoc
         in_allowed_time = (hour >= START_HOUR) or (hour < END_HOUR)
 
     if not in_allowed_time:
         log("Mimo povolený čas (21:00–06:00)")
-        return f"Mimo povolený čas (21:00–06:00) – Hladina: {level:.1f} cm"
+        return f"[{now_str}] Mimo povolený čas (21:00–06:00) – Hladina: {level:.1f} cm"
 
     state = load_state()
     until = datetime.fromisoformat(state["until"]) if state["until"] else None
@@ -145,30 +172,30 @@ def main():
         log(f"Hladina {level:.1f} cm je dostatečná, vypínám čerpadlo.")
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         save_state({"phase": "off", "until": None})
-        return f"Hladina dostatečná ({level:.1f} cm), čerpadlo vypnuto."
+        return f"[{now_str}] Hladina dostatečná ({level:.1f} cm), čerpadlo vypnuto."
 
     if state["phase"] == "on" and until and now < until:
         log(f"Čerpadlo běží, do {until}")
-        return f"Čerpadlo běží, do {until} – Hladina: {level:.1f} cm"
+        return f"[{now_str}] Čerpadlo běží, do {until} – Hladina: {level:.1f} cm"
     elif state["phase"] == "on":
         log("30 minut ON skončilo, vypínám čerpadlo.")
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
         save_state({"phase": "off", "until": next_until.isoformat()})
-        return f"Skončila fáze ON, přecházím do pauzy – Hladina: {level:.1f} cm"
+        return f"[{now_str}] Skončila fáze ON, přecházím do pauzy – Hladina: {level:.1f} cm"
 
     if state["phase"] == "off" and until and now < until:
         log(f"Pauza, čekám do {until}")
-        return f"Pauza do {until} – Hladina: {level:.1f} cm"
+        return f"[{now_str}] Pauza do {until} – Hladina: {level:.1f} cm"
     elif state["phase"] == "off" and level < LOW_LEVEL:
         log("Hladina nízká, zapínám čerpadlo.")
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
         save_state({"phase": "on", "until": next_until.isoformat()})
-        return f"Čerpadlo zapnuto – fáze ON začíná – Hladina: {level:.1f} cm"
+        return f"[{now_str}] Čerpadlo zapnuto – fáze ON začíná – Hladina: {level:.1f} cm"
 
     log("Čekám na pokles hladiny nebo konec pauzy.")
-    return f"Čekám na pokles hladiny nebo konec pauzy – Hladina: {level:.1f} cm"
+    return f"[{now_str}] Čekám na pokles hladiny nebo konec pauzy – Hladina: {level:.1f} cm"
 
 # --- Flask server ---
 app = Flask(__name__)
