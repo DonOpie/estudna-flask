@@ -11,8 +11,8 @@ EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
 
-START_HOUR = 0    # 00:00
-END_HOUR = 6      # 06:00
+START_HOUR = 0    # začátek povoleného čerpání (00:00)
+END_HOUR = 6      # konec povoleného čerpání (06:00)
 
 LOW_LEVEL = 60
 HIGH_LEVEL = 70
@@ -27,7 +27,7 @@ TOKEN_FILE = "token.json"
 TZ = ZoneInfo("Europe/Prague")
 
 # --- Logování ---
-def log(message):
+def log(message: str):
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{now_str}] {message}\n"
     print(line.strip())
@@ -60,6 +60,8 @@ def http_request_with_retry(method, url, tb, header=None, params=None, data=None
             r = requests.post(url, headers=headers, params=params or {}, data=json.dumps(data or {}), timeout=30)
         else:
             r = requests.get(url, headers=headers, params=params or {}, timeout=30)
+
+        # Token expiroval -> relogin a jeden retry
         if r.status_code == 401:
             log("Token expiroval – provádím nový login.")
             tb.force_login(EMAIL, PASSWORD)
@@ -68,11 +70,11 @@ def http_request_with_retry(method, url, tb, header=None, params=None, data=None
                 r = requests.post(url, headers=headers, params=params or {}, data=json.dumps(data or {}), timeout=30)
             else:
                 r = requests.get(url, headers=headers, params=params or {}, timeout=30)
+
         r.raise_for_status()
         try:
             return r.json()
         except ValueError:
-            # server vrátil něco, co není JSON
             log(f"Neočekávaný obsah odpovědi (není JSON). Status={r.status_code}, Text='{r.text[:200]}'")
             raise
     except requests.HTTPError as e:
@@ -140,7 +142,67 @@ class ThingsBoard:
         url = f'{self.server}/api/rpc/twoway/{deviceId}'
         return http_request_with_retry("POST", url, self, {'X-Authorization': f"Bearer {self.userToken}"}, data=data)
 
-# --- Čtení hladiny (bezpečně) ---
+# --- Robustní rozbalení telemetrie ain1 ---
+def _extract_ain1_cm(telemetry_obj):
+    """
+    Vrátí poslední hodnotu ain1 v cm (float) z různých možných tvarů odpovědi TB.
+    Podporované příklady:
+    - {"ain1": [{"ts": 123, "value": "1.234"}]}
+    - {"ain1": [{"value": "1.234"}]}
+    - {"ain1": {"1234567890": [{"value": "1.234"}], "1234567891": [{"value": "1.235"}]}}
+    - {"ain1": {"value": "1.234"}}
+    - {"ain1": "1.234"}
+    """
+    if not isinstance(telemetry_obj, dict):
+        return None
+
+    ain1 = telemetry_obj.get("ain1")
+    if ain1 is None:
+        return None
+
+    def to_float_cm(v):
+        try:
+            return float(v) * 100.0
+        except Exception:
+            return None
+
+    # 1) List položek
+    if isinstance(ain1, list):
+        if not ain1:
+            return None
+        item = ain1[-1]  # poslední záznam
+        if isinstance(item, dict):
+            v = item.get("value")
+            return to_float_cm(v)
+        return to_float_cm(item)
+
+    # 2) Slovník (často mapování ts -> list hodnot)
+    if isinstance(ain1, dict):
+        if "value" in ain1 and not isinstance(ain1["value"], (list, dict)):
+            return to_float_cm(ain1["value"])
+
+        candidates = []
+        for _, v in ain1.items():
+            if isinstance(v, list) and v:
+                last = v[-1]
+                if isinstance(last, dict) and "value" in last:
+                    candidates.append(last["value"])
+                else:
+                    candidates.append(last)
+            elif isinstance(v, dict) and "value" in v:
+                candidates.append(v["value"])
+            elif isinstance(v, (str, int, float)):
+                candidates.append(v)
+        for val in reversed(candidates):
+            cm = to_float_cm(val)
+            if cm is not None:
+                return cm
+        return None
+
+    # 3) Fallback: přímá hodnota
+    return to_float_cm(ain1)
+
+# --- Čtení hladiny ---
 def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str):
     tb = ThingsBoard()
     tb.login(username, password)
@@ -150,20 +212,10 @@ def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str):
     device_id = devices[0]["id"]["id"]
 
     data = tb.getDeviceValues(device_id, "ain1")
-    # Bezpečné rozbalení telemetrie
-    try:
-        arr = data.get("ain1", [])
-        if not arr:
-            log("Varování: Telemetrie 'ain1' je prázdná.")
-            return None
-        val = arr[0].get("value")
-        if val is None:
-            log("Varování: 'ain1'[0] nemá klíč 'value'.")
-            return None
-        return float(val) * 100.0
-    except Exception as e:
-        log(f"Chyba při parsování telemetrie: {repr(e)}; data={str(data)[:200]}")
-        return None
+    level_cm = _extract_ain1_cm(data)
+    if level_cm is None:
+        log(f"Varování: nepodařilo se rozparsovat telemetrii ain1. Surová data: {str(data)[:300]}")
+    return level_cm
 
 # --- Ovládání výstupu ---
 def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: str, state: bool):
@@ -173,7 +225,7 @@ def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: s
     device_id = devices[0]["id"]["id"]
     tb.setDeviceOutput(device_id, output, state)
 
-# --- Stav ---
+# --- Ukládání a načítání stavu cyklu ---
 def save_state(state):
     try:
         with open(STATE_FILE, "w") as f:
@@ -191,7 +243,7 @@ def load_state():
         log(f"Načtení stavu selhalo: {repr(e)}")
         return {"phase": "off", "until": None}
 
-# --- Hlavní logika ---
+# --- Hlavní logika řízení ---
 def main():
     check_and_clear_log()
     now = datetime.now(TZ)
@@ -205,6 +257,7 @@ def main():
 
     log(f"Aktuální hladina: {level:.1f} cm (čas serveru: {now_str})")
 
+    # Kontrola časového okna (00:00–06:00)
     in_allowed_time = START_HOUR <= hour < END_HOUR
     if not in_allowed_time:
         log("Mimo povolený čas (00:00–06:00)")
@@ -254,7 +307,6 @@ def spustit():
     except Exception as e:
         tb = traceback.format_exc()
         log(f"Chyba: {repr(e)}\n{tb}")
-        # Krátký text ven, plný traceback jen do logu:
         return f"❌ Chyba: {repr(e)}\n"
 
 @app.route("/health")
