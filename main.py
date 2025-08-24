@@ -25,19 +25,6 @@ TOKEN_FILE = "token.json"
 
 TZ = ZoneInfo("Europe/Prague")
 
-# --- Funkce pro kontrolu a vyčištění logu každý den ---
-def check_and_clear_log():
-    if not os.path.exists(LOG_FILE):
-        return
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
-    try:
-        with open(LOG_FILE, "r") as f:
-            first_line = f.readline()
-        if first_line.startswith("[") and today not in first_line:
-            open(LOG_FILE, "w").close()  # smaže obsah logu
-    except:
-        pass
-
 # --- Logování ---
 def log(message):
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -49,8 +36,7 @@ def log(message):
 # --- HTTP helper funkce ---
 def httpPost(url, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
-    data = json.dumps(data)
-    r = requests.post(url, data=data, headers=headers, params=params)
+    r = requests.post(url, data=json.dumps(data), headers=headers, params=params)
     r.raise_for_status()
     return r.json()
 
@@ -95,7 +81,6 @@ class ThingsBoard:
         self._save_token()
 
     def login(self, username: str, password: str):
-        # Zkus použít uložený token; pokud neplatí, přihlas znovu
         if self.userToken:
             try:
                 if not self.customerId:
@@ -151,17 +136,19 @@ def load_state():
 
 # --- Hlavní logika řízení ---
 def main():
-    check_and_clear_log()
     now = datetime.now(TZ)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     hour = now.hour
 
-    # Získáme hladinu hned na začátku
     level = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
     log(f"Aktuální hladina: {level:.1f} cm (čas serveru: {now_str})")
 
-    # Časové okno 00:00–06:00
-    in_allowed_time = START_HOUR <= hour < END_HOUR
+    # univerzální kontrola časového intervalu (i kdyby byl přes půlnoc)
+    if START_HOUR < END_HOUR:
+        in_allowed_time = START_HOUR <= hour < END_HOUR
+    else:
+        in_allowed_time = (hour >= START_HOUR) or (hour < END_HOUR)
+
     if not in_allowed_time:
         log("Mimo povolený čas (00:00–06:00)")
         return f"[{now_str}] Mimo povolený čas (00:00–06:00) – Hladina: {level:.1f} cm"
