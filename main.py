@@ -10,8 +10,8 @@ EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
 
-START_HOUR = 0     # začátek povoleného čerpání (00:00)
-END_HOUR = 6       # konec povoleného čerpání (06:00)
+START_HOUR = 0    # začátek povoleného čerpání (00:00)
+END_HOUR = 6      # konec povoleného čerpání (06:00)
 
 LOW_LEVEL = 60
 HIGH_LEVEL = 70
@@ -50,13 +50,13 @@ def log(message):
 def httpPost(url, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
     data = json.dumps(data)
-    r = requests.post(url, data=data, headers=headers, params=params, timeout=30)
+    r = requests.post(url, data=data, headers=headers, params=params)
     r.raise_for_status()
     return r.json()
 
 def httpGet(url, header={}, params={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
-    r = requests.get(url, headers=headers, params=params, timeout=30)
+    r = requests.get(url, headers=headers, params=params)
     r.raise_for_status()
     return r.json()
 
@@ -86,18 +86,16 @@ class ThingsBoard:
             pass
 
     def _fresh_login(self, username: str, password: str):
-        # login
         url = f'{self.server}/api/auth/login'
         response = httpPost(url, {}, data={'username': username, 'password': password})
         self.userToken = response["token"]
-        # načti user -> customerId
         url = f'{self.server}/api/auth/user'
         response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
         self.customerId = response["customerId"]["id"]
         self._save_token()
 
     def login(self, username: str, password: str):
-        # pokud máme token, ověř, že funguje / doplň customerId
+        # Zkus použít uložený token; pokud neplatí, přihlas znovu
         if self.userToken:
             try:
                 if not self.customerId:
@@ -106,7 +104,6 @@ class ThingsBoard:
                     self.customerId = response["customerId"]["id"]
                 return
             except:
-                # token neplatný -> nový login
                 pass
         self._fresh_login(username, password)
 
