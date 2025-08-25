@@ -9,9 +9,10 @@ from flask import Flask
 EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
+TOKEN_FILE = "token.json"
 
-START_HOUR = 0    # začátek povoleného čerpání (00:00)
-END_HOUR = 6      # konec povoleného čerpání (06:00)
+START_HOUR = 0
+END_HOUR = 6
 
 LOW_LEVEL = 60
 HIGH_LEVEL = 70
@@ -31,7 +32,7 @@ def check_and_clear_log():
         with open(LOG_FILE, "r") as f:
             first_line = f.readline()
         if first_line.startswith("[") and today not in first_line:
-            open(LOG_FILE, "w").close()  # smaže obsah logu
+            open(LOG_FILE, "w").close()
     except:
         pass
 
@@ -48,26 +49,52 @@ def httpPost(url, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
     data = json.dumps(data)
     r = requests.post(url, data=data, headers=headers, params=params)
+    if r.status_code == 401:
+        raise Exception("Unauthorized")
     r.raise_for_status()
     return r.json()
 
 def httpGet(url, header={}, params={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
     r = requests.get(url, headers=headers, params=params)
+    if r.status_code == 401:
+        raise Exception("Unauthorized")
     r.raise_for_status()
     return r.json()
+
+# --- Správa tokenu ---
+def load_token():
+    if not os.path.exists(TOKEN_FILE):
+        return None
+    with open(TOKEN_FILE, "r") as f:
+        return json.load(f).get("token")
+
+def save_token(token):
+    with open(TOKEN_FILE, "w") as f:
+        json.dump({"token": token}, f)
 
 # --- Třída ThingsBoard ---
 class ThingsBoard:
     def __init__(self):
         self.server = 'https://cml.seapraha.cz'
-        self.userToken = None
+        self.userToken = load_token()
         self.customerId = None
 
     def login(self, username: str, password: str):
+        try:
+            if self.userToken:
+                url = f'{self.server}/api/auth/user'
+                response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
+                self.customerId = response["customerId"]["id"]
+                return
+        except:
+            pass
+
         url = f'{self.server}/api/auth/login'
         response = httpPost(url, {}, data={'username': username, 'password': password})
         self.userToken = response["token"]
+        save_token(self.userToken)
+
         url = f'{self.server}/api/auth/user'
         response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
         self.customerId = response["customerId"]["id"]
@@ -99,14 +126,13 @@ def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> fl
     values = tb.getDeviceValues(devices[0]["id"]["id"], "ain1")
     return float(values["ain1"][0]["value"]) * 100
 
-# --- Funkce pro ovládání výstupu ---
 def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: str, state: bool):
     tb = ThingsBoard()
     tb.login(username, password)
     devices = tb.getDevicesByName(f"%{serialNumber}")
     tb.setDeviceOutput(devices[0]["id"]["id"], output, state)
 
-# --- Ukládání a načítání stavu cyklu ---
+# --- Stav čerpadla ---
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
@@ -123,16 +149,10 @@ def main():
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
 
-    # Získáme hladinu hned na začátku
     level = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
     log(f"Aktuální hladina: {level:.1f} cm")
 
-    # Kontrola časového okna (00:00–06:00)
-    if START_HOUR < END_HOUR:
-        in_allowed_time = START_HOUR <= hour < END_HOUR
-    else:
-        # interval přes půlnoc
-        in_allowed_time = (hour >= START_HOUR) or (hour < END_HOUR)
+    in_allowed_time = START_HOUR <= hour < END_HOUR if START_HOUR < END_HOUR else hour >= START_HOUR or hour < END_HOUR
 
     if not in_allowed_time:
         log("Mimo povolený čas (00:00–06:00)")
