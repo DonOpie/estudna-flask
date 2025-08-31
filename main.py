@@ -175,8 +175,10 @@ def main():
     hour = now.hour
 
     # Hladina a objem
-    level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)  # cm od dna (pokud ne, uprav LEVEL_OFFSET_CM)
-    h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM = 10.0)
+    LEVEL_OFFSET_CM = 10.0  # hloubka sondy ode dna
+    level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)  # cm od horní hrany sondy
+    h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM)           # efektivní výška hladiny nad sondou
+
     volume_l = horiz_cyl_volume_l(h_eff)                   # reálný geometrický objem
     cap_l    = min(volume_l, CAPACITY_L)                   # pro % ořez na 5000 l
     percent  = (cap_l / CAPACITY_L) * 100.0
