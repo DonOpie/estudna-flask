@@ -14,8 +14,8 @@ TOKEN_FILE = "token.json"
 START_HOUR = 0
 END_HOUR = 6
 
-LOW_LEVEL = 60
-HIGH_LEVEL = 70
+LOW_LEVEL = 70
+HIGH_LEVEL = 80
 
 ON_DURATION = timedelta(minutes=30)
 OFF_DURATION = timedelta(minutes=30)
