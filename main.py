@@ -1,5 +1,6 @@
 import requests
 import json
+import math
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
@@ -22,6 +23,30 @@ OFF_DURATION = timedelta(minutes=30)
 
 STATE_FILE = "stav.json"
 LOG_FILE = "log.txt"
+
+# --- Geometrie nádrže (vodorovný válec) ---
+# Rozměry v cm (vnitřní). 100 % budeme počítat k 5000 l (přepad).
+TANK_DIAMETER_CM = 171.0
+TANK_LENGTH_CM   = 245.8
+LEVEL_OFFSET_CM  = 0.0      # případný offset senzoru vůči dnu
+CAPACITY_L       = 5000.0   # 100 % = 5000 l
+
+R_CM = TANK_DIAMETER_CM / 2.0
+
+def horiz_cyl_volume_l(h_cm: float) -> float:
+    """Objem (l) ve vodorovném válci pro výšku hladiny h (cm)."""
+    # Omezit na [0, průměr]
+    h = max(0.0, min(h_cm, TANK_DIAMETER_CM))
+    r, L = R_CM, TANK_LENGTH_CM
+    if h == 0:
+        A = 0.0
+    elif h == 2 * r:
+        A = math.pi * r * r
+    else:
+        # Plocha kruhové výseče / segmentu
+        A = r*r*math.acos((r - h)/r) - (r - h)*math.sqrt(max(0.0, 2*r*h - h*h))
+    # cm^3 -> l
+    return (A * L) / 1000.0
 
 # --- Funkce pro kontrolu a vyčištění logu každý den ---
 def check_and_clear_log():
@@ -124,7 +149,7 @@ def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> fl
     tb.login(username, password)
     devices = tb.getDevicesByName(f"%{serialNumber}")
     values = tb.getDeviceValues(devices[0]["id"]["id"], "ain1")
-    return float(values["ain1"][0]["value"]) * 100
+    return float(values["ain1"][0]["value"]) * 100  # cm
 
 def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: str, state: bool):
     tb = ThingsBoard()
@@ -149,46 +174,59 @@ def main():
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
 
-    level = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
-    log(f"Aktuální hladina: {level:.1f} cm")
+    # Hladina a objem
+    level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)  # cm od dna (pokud ne, uprav LEVEL_OFFSET_CM)
+    h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM = 10.0)
+    volume_l = horiz_cyl_volume_l(h_eff)                   # reálný geometrický objem
+    cap_l    = min(volume_l, CAPACITY_L)                   # pro % ořez na 5000 l
+    percent  = (cap_l / CAPACITY_L) * 100.0
+
+    log(f"Aktuální hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l | Zaplnění do 5000 l: {percent:.1f} %")
 
     in_allowed_time = START_HOUR <= hour < END_HOUR if START_HOUR < END_HOUR else hour >= START_HOUR or hour < END_HOUR
 
     if not in_allowed_time:
-        log("Mimo povolený čas (00:00–06:00)")
-        return f"Mimo povolený čas (00:00–06:00) – Hladina: {level:.1f} cm"
+        msg = f"Mimo povolený čas (00:00–06:00) – Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        log(msg)
+        return msg
 
     state = load_state()
     until = datetime.fromisoformat(state["until"]) if state["until"] else None
 
-    if level >= HIGH_LEVEL:
-        log(f"Hladina {level:.1f} cm je dostatečná, vypínám čerpadlo.")
+    if level_cm >= HIGH_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         save_state({"phase": "off", "until": None})
-        return f"Hladina dostatečná ({level:.1f} cm), čerpadlo vypnuto."
+        msg = f"Hladina {level_cm:.1f} cm je dostatečná, čerpadlo VYPNUTO. | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        log(msg)
+        return msg
 
     if state["phase"] == "on" and until and now < until:
-        log(f"Čerpadlo běží, do {until}")
-        return f"Čerpadlo běží, do {until} – Hladina: {level:.1f} cm"
+        msg = f"Čerpadlo běží do {until} – Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        log(msg)
+        return msg
     elif state["phase"] == "on":
-        log("30 minut ON skončilo, vypínám čerpadlo.")
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
         save_state({"phase": "off", "until": next_until.isoformat()})
-        return f"Skončila fáze ON, přecházím do pauzy – Hladina: {level:.1f} cm"
+        msg = f"Skončila fáze ON, přecházím do pauzy – do {next_until}. | Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        log(msg)
+        return msg
 
     if state["phase"] == "off" and until and now < until:
-        log(f"Pauza, čekám do {until}")
-        return f"Pauza do {until} – Hladina: {level:.1f} cm"
-    elif state["phase"] == "off" and level < LOW_LEVEL:
-        log("Hladina nízká, zapínám čerpadlo.")
+        msg = f"Pauza do {until} – Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        log(msg)
+        return msg
+    elif state["phase"] == "off" and level_cm < LOW_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
         save_state({"phase": "on", "until": next_until.isoformat()})
-        return f"Čerpadlo zapnuto – fáze ON začíná – Hladina: {level:.1f} cm"
+        msg = f"Hladina nízká, čerpadlo ZAPNUTO do {next_until}. | Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        log(msg)
+        return msg
 
-    log("Čekám na pokles hladiny nebo konec pauzy.")
-    return f"Čekám na pokles hladiny nebo konec pauzy – Hladina: {level:.1f} cm"
+    msg = f"Čekám na pokles hladiny nebo konec pauzy – Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+    log(msg)
+    return msg
 
 # --- Flask server ---
 app = Flask(__name__)
