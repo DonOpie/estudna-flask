@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime
 from pydrawise import Auth, Hydrawise
-from pydrawise import helpers  # 📌 pro přímý přístup k API
 
 HW_USER = "viskot@servis-zahrad.cz"
 HW_PASS = "Poklop1234*"
@@ -22,15 +21,19 @@ async def run_test():
             return "❌ Žádný controller nebyl nalezen."
         controller = controllers[0]
         output.append(f"➡️ Controller: {controller.name} (ID {controller.id})")
+        output.append(f"📡 Controller raw: {controller.__dict__}")
 
         # Zones
         zones = await h.get_zones(controller)
         if not zones:
             return "❌ Žádné zóny nebyly nalezeny."
-        zone = zones[0]
         output.append("➡️ Zones: " + ", ".join([z.name for z in zones]))
+        for z in zones:
+            output.append(f"📡 Zone raw: {z.__dict__}")
 
-        # Start zone (5 minut pro jistotu)
+        zone = zones[0]
+
+        # Start zone
         try:
             res = await h.start_zone(zone, custom_run_duration=300)
             output.append(f"✅ start_zone spuštěno pro zónu {zone.name} (5 min)")
@@ -45,18 +48,6 @@ async def run_test():
             output.append(f"🔎 Odpověď API (pydrawise): {res2}")
         except Exception as e:
             output.append(f"❌ Chyba stop_zone: {e}")
-
-        # 📌 Přímý dotaz na Hydrawise API (JSON)
-        try:
-            token = (await h._auth.token()).replace("Bearer ", "")
-            cust = helpers.customer_details(token)
-            sched = helpers.status_schedule(token)
-            output.append("📡 customer_details JSON:")
-            output.append(str(cust))
-            output.append("📡 status_schedule JSON:")
-            output.append(str(sched))
-        except Exception as e:
-            output.append(f"❌ Chyba při načítání detailů: {e}")
 
     except Exception as e:
         output.append(f"❌ Chyba pydrawise: {e}")
