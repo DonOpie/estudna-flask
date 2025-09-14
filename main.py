@@ -26,7 +26,7 @@ LOG_FILE = "log.txt"
 
 # --- Hydrawise (HW) konfigurace ---
 HW_API_KEY = "3A3B-8AB3-8AB3-DDAC"
-HW_CONTROLLER_ID = "05756cd8"
+HW_RELAY_ID = 10729434  # Trávník, svorka 1
 
 # --- Geometrie nádrže (vodorovný válec) ---
 TANK_DIAMETER_CM = 171.0
@@ -87,14 +87,36 @@ def httpGet(url, header={}, params={}):
     return r.json()
 
 # --- Hydrawise API funkce ---
+def HW_runzone(relay_id=HW_RELAY_ID, duration=900):
+    """Spustí zónu na zadanou dobu (v sekundách)."""
+    url = "https://api.hydrawise.com/api/v1/runzone.php"
+    params = {
+        "api_key": HW_API_KEY,
+        "relay_id": relay_id,
+        "custom": duration
+    }
+    r = requests.get(url, params=params)
+    r.raise_for_status()
+    return r.json()
+
+def HW_stopzone(relay_id=HW_RELAY_ID):
+    """Zastaví konkrétní zónu."""
+    url = "https://api.hydrawise.com/api/v1/stopzone.php"
+    params = {
+        "api_key": HW_API_KEY,
+        "relay_id": relay_id
+    }
+    r = requests.get(url, params=params)
+    r.raise_for_status()
+    return r.json()
+
 def HW_get_zones():
-    """Vrátí seznam všech zón (relays) přes endpoint statusschedule.php."""
+    """Vrátí seznam všech zón přes endpoint statusschedule.php."""
     url = "https://api.hydrawise.com/api/v1/statusschedule.php"
     params = {"api_key": HW_API_KEY}
     r = requests.get(url, params=params)
     r.raise_for_status()
     data = r.json()
-
     zones = []
     for relay in data.get("relays", []):
         zones.append({
@@ -103,7 +125,6 @@ def HW_get_zones():
             "running": relay.get("timestr", "neznámý stav")
         })
     return zones
-
 
 # --- Správa tokenu ---
 def load_token():
@@ -267,6 +288,24 @@ def hw_zones():
     except Exception as e:
         log(f"Chyba HW: {e}")
         return f"❌ Chyba HW: {e}\n"
+
+@app.route("/hw_start")
+def hw_start():
+    try:
+        res = HW_runzone()
+        return f"✅ HW zóna spuštěna: {res}\n"
+    except Exception as e:
+        log(f"Chyba HW_start: {e}")
+        return f"❌ Chyba spuštění: {e}\n"
+
+@app.route("/hw_stop")
+def hw_stop():
+    try:
+        res = HW_stopzone()
+        return f"✅ HW zóna zastavena: {res}\n"
+    except Exception as e:
+        log(f"Chyba HW_stop: {e}")
+        return f"❌ Chyba zastavení: {e}\n"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
