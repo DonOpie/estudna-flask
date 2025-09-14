@@ -88,27 +88,26 @@ def httpGet(url, header={}, params={}):
 
 # --- Hydrawise API funkce ---
 def HW_runzone(relay_id=HW_RELAY_ID, duration=900):
-    """Spustí zónu na zadanou dobu (v sekundách)."""
-    url = "https://api.hydrawise.com/api/setzone.php"
-    params = {
-        "api_key": HW_API_KEY,
-        "relay_id": relay_id,
-        "custom": duration,
-        "action": "on"
+    """Spustí zónu na zadanou dobu (sekundy) přes REST API 2.0."""
+    url = "https://api.hydrawise.com/v2/relay/run"
+    headers = {
+        "Authorization": f"Bearer {HW_API_KEY}",
+        "Content-Type": "application/json"
     }
-    r = requests.get(url, params=params)
+    data = {"relay_id": relay_id, "time": duration}
+    r = requests.post(url, headers=headers, json=data)
     r.raise_for_status()
     return r.json()
 
 def HW_stopzone(relay_id=HW_RELAY_ID):
-    """Zastaví konkrétní zónu."""
-    url = "https://api.hydrawise.com/api/setzone.php"
-    params = {
-        "api_key": HW_API_KEY,
-        "relay_id": relay_id,
-        "action": "off"
+    """Zastaví konkrétní zónu přes REST API 2.0."""
+    url = "https://api.hydrawise.com/v2/relay/stop"
+    headers = {
+        "Authorization": f"Bearer {HW_API_KEY}",
+        "Content-Type": "application/json"
     }
-    r = requests.get(url, params=params)
+    data = {"relay_id": relay_id}
+    r = requests.post(url, headers=headers, json=data)
     r.raise_for_status()
     return r.json()
 
