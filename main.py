@@ -36,8 +36,8 @@ R_CM = TANK_DIAMETER_CM / 2.0
 # --- Konfigurace Hydrawise ---
 HW_API_KEY = "d9c8-2212-cd08-6bb5"
 HW_ZONE_NAME = "Trávník"
-HW_START_LEVEL = 126  # cm
-HW_STOP_LEVEL  = 120  # cm
+HW_START_LEVEL = 149  # cm
+HW_STOP_LEVEL  = 133  # cm
 
 # --- Funkce objemu ve válci ---
 def horiz_cyl_volume_l(h_cm: float) -> float:
