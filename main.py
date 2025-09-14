@@ -88,7 +88,7 @@ def httpGet(url, header={}, params={}):
 
 # --- Hydrawise API funkce ---
 def HW_get_zones():
-    """Vrátí seznam zón (relays) z Hydrawise účtu."""
+    """Vrátí seznam všech controllerů a jejich zón (relays)."""
     url = "https://api.hydrawise.com/api/v1/customerdetails.php"
     params = {"api_key": HW_API_KEY}
     r = requests.get(url, params=params)
@@ -97,9 +97,15 @@ def HW_get_zones():
 
     zones = []
     for controller in data.get("controllers", []):
-        if str(controller["controller_id"]) == str(HW_CONTROLLER_ID):
-            for relay in controller.get("relays", []):
-                zones.append({"name": relay["name"], "relay_id": relay["relay_id"]})
+        ctrl_id = controller.get("controller_id")
+        ctrl_name = controller.get("name", "Neznámý controller")
+        for relay in controller.get("relays", []):
+            zones.append({
+                "controller_id": ctrl_id,
+                "controller_name": ctrl_name,
+                "relay_id": relay.get("relay_id"),
+                "relay_name": relay.get("name", "bez názvu")
+            })
     return zones
 
 # --- Správa tokenu ---
