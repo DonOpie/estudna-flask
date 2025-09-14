@@ -23,17 +23,19 @@ async def run_test():
         zone = zones[0]
         output.append("➡️ Zones: " + ", ".join([z.name for z in zones]))
 
-        # Start zone
+        # Start zone (5 minut pro jistotu)
         try:
-            await h.start_zone(zone, custom_run_duration=30)
-            output.append(f"✅ start_zone spuštěno pro zónu {zone.name} (30s)")
+            res = await h.start_zone(zone, custom_run_duration=300)
+            output.append(f"✅ start_zone spuštěno pro zónu {zone.name} (5 min)")
+            output.append(f"🔎 Odpověď API: {res}")
         except Exception as e:
             output.append(f"❌ Chyba start_zone: {e}")
 
         # Stop zone
         try:
-            await h.stop_zone(zone)
+            res2 = await h.stop_zone(zone)
             output.append(f"✅ stop_zone provedeno pro zónu {zone.name}")
+            output.append(f"🔎 Odpověď API: {res2}")
         except Exception as e:
             output.append(f"❌ Chyba stop_zone: {e}")
 
