@@ -25,7 +25,7 @@ STATE_FILE = "stav.json"
 LOG_FILE = "log.txt"
 
 # --- Hydrawise (HW) konfigurace ---
-HW_API_KEY = "3A3B-8AB3-8AB3-DDAC"
+HW_API_KEY = "d9c8-2212-cd08-6bb5"
 HW_RELAY_ID = 10729434  # Trávník, svorka 1
 
 # --- Geometrie nádrže (vodorovný válec) ---
