@@ -1,6 +1,6 @@
 from flask import Flask
-from estudna import spustit   # ⬅️ tvoje původní funkce ze skriptu eStudna
-from test_pydrawise import bp as pydrawise_bp  # ⬅️ nový blueprint pro Hydrawise
+from main import spustit   # ⬅️ tvoje funkce pro eStudnu je v main.py
+from test_pydrawise import bp as pydrawise_bp  # ⬅️ blueprint pro Hydrawise
 
 app = Flask(__name__)
 
