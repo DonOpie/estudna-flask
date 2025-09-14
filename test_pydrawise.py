@@ -1,61 +1,53 @@
-import asyncio
+from flask import Blueprint
 from datetime import datetime
 from pydrawise import Auth, Hydrawise
 
-HW_USER = "viskot@servis-zahrad.cz"
-HW_PASS = "Poklop1234*"
+bp = Blueprint("pydrawise", __name__)
 
-async def run_test():
-    output = []
+# 🔑 Použijeme tvůj API klíč
+API_KEY = "d9c8-2212-cd08-6bb5"
 
-    # Aktuální čas na serveru
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    output.append(f"🕒 Aktuální čas serveru: {now_str}")
 
-    try:
-        h = Hydrawise(Auth(HW_USER, HW_PASS))
+@bp.route("/pydrawise")
+async def test_pydrawise():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Controllers
-        controllers = await h.get_controllers()
-        if not controllers:
-            return "❌ Žádný controller nebyl nalezen."
-        controller = controllers[0]
+    # Přihlášení do API
+    auth = Auth(API_KEY)
+    hw = Hydrawise(auth)
+
+    # Načteme kontrolery
+    controllers = await hw.get_controllers()
+    output = [f"🕒 Aktuální čas serveru: {now}"]
+
+    for controller in controllers:
         output.append(f"➡️ Controller: {controller.name} (ID {controller.id})")
-        output.append(f"📡 Controller raw: {controller.__dict__}")
 
-        # Zones
-        zones = await h.get_zones(controller)
-        if not zones:
-            return "❌ Žádné zóny nebyly nalezeny."
-        output.append("➡️ Zones: " + ", ".join([z.name for z in zones]))
-        for z in zones:
-            output.append(f"📡 Zone raw: {z.__dict__}")
+        zones = await hw.get_zones(controller)
+        for zone in zones:
+            output.append(f"🌱 Zone: {zone.name} (ID {zone.id})")
 
-        zone = zones[0]
+            # --- Test 1: Spustíme zónu na 5 minut ---
+            try:
+                await hw.start_zone(zone, custom_run_duration=300)
+                output.append(f"✅ start_zone spuštěno pro zónu {zone.name} (5 min)")
+            except Exception as e:
+                output.append(f"❌ Chyba start_zone: {e}")
 
-        # Start zone
-        try:
-            res = await h.start_zone(zone, custom_run_duration=300)
-            output.append(f"✅ start_zone spuštěno pro zónu {zone.name} (5 min)")
-            output.append(f"🔎 Odpověď API (pydrawise): {res}")
-        except Exception as e:
-            output.append(f"❌ Chyba start_zone: {e}")
+            # --- Test 2: Spustíme všechny zóny na 5 minut ---
+            try:
+                await hw.start_all_zones(controller, custom_run_duration=300)
+                output.append("✅ start_all_zones spuštěno (5 min)")
+            except Exception as e:
+                output.append(f"❌ Chyba start_all_zones: {e}")
 
-        # Stop zone
-        try:
-            res2 = await h.stop_zone(zone)
-            output.append(f"✅ stop_zone provedeno pro zónu {zone.name}")
-            output.append(f"🔎 Odpověď API (pydrawise): {res2}")
-        except Exception as e:
-            output.append(f"❌ Chyba stop_zone: {e}")
+        # --- Výpis po spuštění ---
+        zones_after = await hw.get_zones(controller)
+        running = [z for z in zones_after if z.scheduled_runs.current_run is not None]
+        if running:
+            for r in running:
+                output.append(f"▶️ Zóna {r.name} běží, zbývá {r.scheduled_runs.current_run.remaining_time}")
+        else:
+            output.append("⏹ Žádná zóna neběží")
 
-    except Exception as e:
-        output.append(f"❌ Chyba pydrawise: {e}")
-
-    return "\n".join(output)
-
-def main():
-    return asyncio.run(run_test())
-
-if __name__ == "__main__":
-    print(main())
+    return "<br>".join(output)
