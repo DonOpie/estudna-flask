@@ -155,8 +155,12 @@ def load_state():
 # --- Hydrawise API (GraphQL přes pydrawise) ---
 from pydrawise import Auth, Hydrawise
 
-auth = Auth(HW_API_KEY)
+HW_EMAIL = "viskot@servis-zahrad.cz"
+HW_PASSWORD = "Poklop1234*"
+
+auth = Auth(HW_EMAIL, HW_PASSWORD)
 hw = Hydrawise(auth)
+
 
 async def HW_control(level_cm: float):
     """Spustí nebo zastaví zónu podle hladiny."""
