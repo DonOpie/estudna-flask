@@ -6,10 +6,12 @@ from zoneinfo import ZoneInfo
 import os
 import subprocess
 from flask import Flask
+import asyncio
+from pydrawise import Auth, Hydrawise
 
-# --- Konfigurace ---
+# --- Konfigurace eStudna ---
 EMAIL = "viskot@servis-zahrad.cz"
-PASSWORD = "poklop1234"
+PASSWORD = "Poklop1234*"
 SN = "SB824009"
 TOKEN_FILE = "token.json"
 
@@ -32,6 +34,15 @@ LEVEL_OFFSET_CM  = 0.0
 CAPACITY_L       = 5000.0
 R_CM = TANK_DIAMETER_CM / 2.0
 
+# --- Hydrawise konfigurace ---
+EMAIL_HW = "viskot@servis-zahrad.cz"
+PASSWORD_HW = "Poklop1234*"
+ZONE_ID = 10729434   # Trávník
+HIGH_LEVEL_HW = 150  # cm – spustit
+LOW_LEVEL_HW  = 130  # cm – vypnout
+
+
+# --- Výpočty objemu ---
 def horiz_cyl_volume_l(h_cm: float) -> float:
     h = max(0.0, min(h_cm, TANK_DIAMETER_CM))
     r, L = R_CM, TANK_LENGTH_CM
@@ -43,6 +54,8 @@ def horiz_cyl_volume_l(h_cm: float) -> float:
         A = r*r*math.acos((r - h)/r) - (r - h)*math.sqrt(max(0.0, 2*r*h - h*h))
     return (A * L) / 1000.0  # cm³ -> l
 
+
+# --- Logování ---
 def check_and_clear_log():
     if not os.path.exists(LOG_FILE):
         return
@@ -62,6 +75,8 @@ def log(message):
     with open(LOG_FILE, "a") as f:
         f.write(log_line)
 
+
+# --- HTTP pomocné funkce ---
 def httpPost(url, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
     data = json.dumps(data)
@@ -79,6 +94,8 @@ def httpGet(url, header={}, params={}):
     r.raise_for_status()
     return r.json()
 
+
+# --- Token ---
 def load_token():
     if not os.path.exists(TOKEN_FILE):
         return None
@@ -89,6 +106,8 @@ def save_token(token):
     with open(TOKEN_FILE, "w") as f:
         json.dump({"token": token}, f)
 
+
+# --- Třída ThingsBoard ---
 class ThingsBoard:
     def __init__(self):
         self.server = 'https://cml.seapraha.cz'
@@ -133,6 +152,8 @@ class ThingsBoard:
         url = f'{self.server}/api/rpc/twoway/{deviceId}'
         return httpPost(url, {'X-Authorization': f"Bearer {self.userToken}"}, {}, data)
 
+
+# --- Funkce eStudna ---
 def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> float:
     tb = ThingsBoard()
     tb.login(username, password)
@@ -146,6 +167,8 @@ def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: s
     devices = tb.getDevicesByName(f"%{serialNumber}")
     tb.setDeviceOutput(devices[0]["id"]["id"], output, state)
 
+
+# --- Uložení stavu ---
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
@@ -156,6 +179,43 @@ def load_state():
     with open(STATE_FILE, "r") as f:
         return json.load(f)
 
+
+# --- Hydrawise funkce ---
+async def HW_start_zone(zone_id, duration=3600):
+    auth = Auth(EMAIL_HW, PASSWORD_HW)
+    hw = Hydrawise(auth)
+    controllers = await hw.get_controllers(fetch_zones=True)
+    controller = controllers[0]
+    zones = await hw.get_zones(controller)
+    for z in zones:
+        if z.id == zone_id:
+            await hw.start_zone(z, custom_run_duration=duration)
+            log(f"🌧 HW: Spouštím zónu {z.name} na {duration}s (hladina ≥ {HIGH_LEVEL_HW} cm).")
+            return f"HW: Zóna {z.name} spuštěna na {duration}s"
+    return None
+
+async def HW_stop_zone(zone_id):
+    auth = Auth(EMAIL_HW, PASSWORD_HW)
+    hw = Hydrawise(auth)
+    controllers = await hw.get_controllers(fetch_zones=True)
+    controller = controllers[0]
+    zones = await hw.get_zones(controller)
+    for z in zones:
+        if z.id == zone_id:
+            await hw.stop_zone(z)
+            log(f"🌧 HW: Vypínám zónu {z.name} (hladina ≤ {LOW_LEVEL_HW} cm).")
+            return f"HW: Zóna {z.name} vypnuta"
+    return None
+
+def check_HW_logic(level_cm: float):
+    if level_cm >= HIGH_LEVEL_HW:
+        return asyncio.run(HW_start_zone(ZONE_ID))
+    elif level_cm <= LOW_LEVEL_HW:
+        return asyncio.run(HW_stop_zone(ZONE_ID))
+    return "HW: žádná akce"
+
+
+# --- Hlavní logika ---
 def main():
     check_and_clear_log()
     now = datetime.now(ZoneInfo("Europe/Prague"))
@@ -186,35 +246,32 @@ def main():
         save_state({"phase": "off", "until": None})
         msg = f"Hladina {level_cm:.1f} cm je dostatečná, čerpadlo VYPNUTO."
         log(msg)
-        return msg
-
-    if state["phase"] == "on" and until and now < until:
+    elif state["phase"] == "on" and until and now < until:
         msg = f"Čerpadlo běží do {until}"
         log(msg)
-        return msg
     elif state["phase"] == "on":
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
         save_state({"phase": "off", "until": next_until.isoformat()})
         msg = f"Skončila fáze ON, přecházím do pauzy – do {next_until}"
         log(msg)
-        return msg
-
-    if state["phase"] == "off" and until and now < until:
+    elif state["phase"] == "off" and until and now < until:
         msg = f"Pauza do {until}"
         log(msg)
-        return msg
     elif state["phase"] == "off" and level_cm < LOW_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
         save_state({"phase": "on", "until": next_until.isoformat()})
         msg = f"Hladina nízká, čerpadlo ZAPNUTO do {next_until}"
         log(msg)
-        return msg
+    else:
+        msg = f"Čekám na pokles hladiny nebo konec pauzy"
+        log(msg)
 
-    msg = f"Čekám na pokles hladiny nebo konec pauzy"
-    log(msg)
-    return msg
+    # --- Hydrawise logika ---
+    hw_msg = check_HW_logic(level_cm)
+
+    return f"{msg} | {hw_msg}"
 
 
 # --- Flask server ---
@@ -229,7 +286,7 @@ def spustit():
         log(f"Chyba: {e}")
         return f"❌ Chyba: {e}\n"
 
-# --- Nový endpoint pro spuštění externího testu ---
+# --- Endpoint pro test Hydrawise ---
 @app.route("/pydrawise")
 def run_pydrawise():
     try:
