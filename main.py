@@ -143,12 +143,12 @@ async def HW_control(level_cm: float):
         log("❌ Zóna Trávník nenalezena v Hydrawise")
         return
 
-    if level_cm >= 150:
+    if level_cm >= 126:
         await hw.start_zone(zone, custom_run_duration=3600)
-        log(f"🌊 Hydrawise: spuštěna zóna {zone.name} (hladina {level_cm:.1f} cm ≥ 150 cm)")
-    elif level_cm <= 130:
+        log(f"🌊 Hydrawise: spuštěna zóna {zone.name} (hladina {level_cm:.1f} cm ≥ 126 cm)")
+    elif level_cm <= 121:
         await hw.stop_zone(zone)
-        log(f"🌊 Hydrawise: zastavena zóna {zone.name} (hladina {level_cm:.1f} cm ≤ 130 cm)")
+        log(f"🌊 Hydrawise: zastavena zóna {zone.name} (hladina {level_cm:.1f} cm ≤ 121 cm)")
     else:
         log(f"🌊 Hydrawise: beze změny (hladina {level_cm:.1f} cm)")
 
