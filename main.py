@@ -24,18 +24,19 @@ OFF_DURATION = timedelta(minutes=30)
 STATE_FILE = "stav.json"
 LOG_FILE = "log.txt"
 
+# --- Hydrawise (HW) konfigurace ---
+HW_API_KEY = "3A3B-8AB3-8AB3-DDAC"
+HW_CONTROLLER_ID = "05756cd8"
+
 # --- Geometrie nádrže (vodorovný válec) ---
-# Rozměry v cm (vnitřní). 100 % budeme počítat k 5000 l (přepad).
 TANK_DIAMETER_CM = 171.0
 TANK_LENGTH_CM   = 245.8
-LEVEL_OFFSET_CM  = 0.0      # případný offset senzoru vůči dnu
-CAPACITY_L       = 5000.0   # 100 % = 5000 l
+LEVEL_OFFSET_CM  = 0.0
+CAPACITY_L       = 5000.0
 
 R_CM = TANK_DIAMETER_CM / 2.0
 
 def horiz_cyl_volume_l(h_cm: float) -> float:
-    """Objem (l) ve vodorovném válci pro výšku hladiny h (cm)."""
-    # Omezit na [0, průměr]
     h = max(0.0, min(h_cm, TANK_DIAMETER_CM))
     r, L = R_CM, TANK_LENGTH_CM
     if h == 0:
@@ -43,9 +44,7 @@ def horiz_cyl_volume_l(h_cm: float) -> float:
     elif h == 2 * r:
         A = math.pi * r * r
     else:
-        # Plocha kruhové výseče / segmentu
         A = r*r*math.acos((r - h)/r) - (r - h)*math.sqrt(max(0.0, 2*r*h - h*h))
-    # cm^3 -> l
     return (A * L) / 1000.0
 
 # --- Funkce pro kontrolu a vyčištění logu každý den ---
@@ -86,6 +85,22 @@ def httpGet(url, header={}, params={}):
         raise Exception("Unauthorized")
     r.raise_for_status()
     return r.json()
+
+# --- Hydrawise API funkce ---
+def HW_get_zones():
+    """Vrátí seznam zón (relays) z Hydrawise účtu."""
+    url = "https://api.hydrawise.com/api/v1/customerdetails.php"
+    params = {"api_key": HW_API_KEY}
+    r = requests.get(url, params=params)
+    r.raise_for_status()
+    data = r.json()
+
+    zones = []
+    for controller in data.get("controllers", []):
+        if str(controller["controller_id"]) == str(HW_CONTROLLER_ID):
+            for relay in controller.get("relays", []):
+                zones.append({"name": relay["name"], "relay_id": relay["relay_id"]})
+    return zones
 
 # --- Správa tokenu ---
 def load_token():
@@ -174,13 +189,12 @@ def main():
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
 
-    # Hladina a objem
-    LEVEL_OFFSET_CM = 10.0  # hloubka sondy ode dna
-    level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)  # cm od horní hrany sondy
-    h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM)           # efektivní výška hladiny nad sondou
+    LEVEL_OFFSET_CM = 10.0
+    level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
+    h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM)
 
-    volume_l = horiz_cyl_volume_l(h_eff)                   # reálný geometrický objem
-    cap_l    = min(volume_l, CAPACITY_L)                   # pro % ořez na 5000 l
+    volume_l = horiz_cyl_volume_l(h_eff)
+    cap_l    = min(volume_l, CAPACITY_L)
     percent  = (cap_l / CAPACITY_L) * 100.0
 
     log(f"Aktuální hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l | Zaplnění do 5000 l: {percent:.1f} %")
@@ -241,6 +255,15 @@ def spustit():
     except Exception as e:
         log(f"Chyba: {e}")
         return f"❌ Chyba: {e}\n"
+
+@app.route("/hw_zones")
+def hw_zones():
+    try:
+        zones = HW_get_zones()
+        return f"Zóny HW: {json.dumps(zones, indent=2)}\n"
+    except Exception as e:
+        log(f"Chyba HW: {e}")
+        return f"❌ Chyba HW: {e}\n"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
