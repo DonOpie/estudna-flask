@@ -1,48 +1,49 @@
 import asyncio
 from pydrawise import Auth, Hydrawise
 
-# Přihlašovací údaje k Hydrawise účtu
 HW_USER = "viskot@servis-zahrad.cz"
-HW_PASS = "Poklop1234*"   # správné heslo
+HW_PASS = "Poklop1234*"
 
-async def main():
-    # Přihlášení a vytvoření klienta
-    h = Hydrawise(Auth(HW_USER, HW_PASS))
-
-    # 1) Získání seznamu controllerů
-    controllers = await h.get_controllers()
-    print("➡️ Controllers:", controllers)
-
-    if not controllers:
-        print("❌ Žádný controller nebyl nalezen.")
-        return
-    controller = controllers[0]
-
-    # 2) Získání seznamu zón pro controller
-    zones = await h.get_zones(controller)
-    print("➡️ Zones:", zones)
-
-    if not zones:
-        print("❌ Žádné zóny nebyly nalezeny.")
-        return
-    zone = zones[0]
-
-    # 3) Spuštění první zóny na 60 sekund
-    print(f"▶️ Spouštím zónu: {zone.name} (ID {zone.id}) na 60 sekund...")
+async def run_test():
+    output = []
     try:
-        await h.start_zone(zone, custom_run_duration=60)
-        print("✅ start_zone proběhlo OK")
-    except Exception as e:
-        print("❌ Chyba při start_zone:", e)
+        h = Hydrawise(Auth(HW_USER, HW_PASS))
 
-    # 4) Zastavení zóny
-    print(f"⏹ Zastavuji zónu: {zone.name} (ID {zone.id})...")
-    try:
-        await h.stop_zone(zone)
-        print("✅ stop_zone proběhlo OK")
-    except Exception as e:
-        print("❌ Chyba při stop_zone:", e)
+        # Controllers
+        controllers = await h.get_controllers()
+        if not controllers:
+            return "❌ Žádný controller nebyl nalezen."
+        controller = controllers[0]
+        output.append(f"➡️ Controller: {controller.name} (ID {controller.id})")
 
+        # Zones
+        zones = await h.get_zones(controller)
+        if not zones:
+            return "❌ Žádné zóny nebyly nalezeny."
+        zone = zones[0]
+        output.append("➡️ Zones: " + ", ".join([z.name for z in zones]))
+
+        # Start zone
+        try:
+            await h.start_zone(zone, custom_run_duration=30)
+            output.append(f"✅ start_zone spuštěno pro zónu {zone.name} (30s)")
+        except Exception as e:
+            output.append(f"❌ Chyba start_zone: {e}")
+
+        # Stop zone
+        try:
+            await h.stop_zone(zone)
+            output.append(f"✅ stop_zone provedeno pro zónu {zone.name}")
+        except Exception as e:
+            output.append(f"❌ Chyba stop_zone: {e}")
+
+    except Exception as e:
+        output.append(f"❌ Chyba pydrawise: {e}")
+
+    return "\n".join(output)
+
+def main():
+    return asyncio.run(run_test())
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    print(main())
