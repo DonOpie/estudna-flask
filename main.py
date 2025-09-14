@@ -89,11 +89,12 @@ def httpGet(url, header={}, params={}):
 # --- Hydrawise API funkce ---
 def HW_runzone(relay_id=HW_RELAY_ID, duration=900):
     """Spustí zónu na zadanou dobu (v sekundách)."""
-    url = "https://api.hydrawise.com/api/v1/runzone.php"
+    url = "https://api.hydrawise.com/api/setzone.php"
     params = {
         "api_key": HW_API_KEY,
         "relay_id": relay_id,
-        "custom": duration
+        "custom": duration,
+        "action": "on"
     }
     r = requests.get(url, params=params)
     r.raise_for_status()
@@ -101,10 +102,11 @@ def HW_runzone(relay_id=HW_RELAY_ID, duration=900):
 
 def HW_stopzone(relay_id=HW_RELAY_ID):
     """Zastaví konkrétní zónu."""
-    url = "https://api.hydrawise.com/api/v1/stopzone.php"
+    url = "https://api.hydrawise.com/api/setzone.php"
     params = {
         "api_key": HW_API_KEY,
-        "relay_id": relay_id
+        "relay_id": relay_id,
+        "action": "off"
     }
     r = requests.get(url, params=params)
     r.raise_for_status()
