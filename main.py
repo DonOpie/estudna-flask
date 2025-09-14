@@ -4,9 +4,10 @@ import math
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
+import subprocess
 from flask import Flask
 
-# --- Konfigurace eStudna ---
+# --- Konfigurace ---
 EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
@@ -24,17 +25,11 @@ OFF_DURATION = timedelta(minutes=30)
 STATE_FILE = "stav.json"
 LOG_FILE = "log.txt"
 
-# --- Konfigurace Hydrawise (HW) ---
-HW_API_KEY = "d9c8-2212-cd08-6bb5"
-HW_RELAY_ID = 10729434   # Trávník (svorka 1)
-HW_TOKEN_FILE = "hw_token.json"
-
 # --- Geometrie nádrže (vodorovný válec) ---
 TANK_DIAMETER_CM = 171.0
 TANK_LENGTH_CM   = 245.8
 LEVEL_OFFSET_CM  = 0.0
 CAPACITY_L       = 5000.0
-
 R_CM = TANK_DIAMETER_CM / 2.0
 
 def horiz_cyl_volume_l(h_cm: float) -> float:
@@ -46,9 +41,20 @@ def horiz_cyl_volume_l(h_cm: float) -> float:
         A = math.pi * r * r
     else:
         A = r*r*math.acos((r - h)/r) - (r - h)*math.sqrt(max(0.0, 2*r*h - h*h))
-    return (A * L) / 1000.0
+    return (A * L) / 1000.0  # cm³ -> l
 
-# --- Logování ---
+def check_and_clear_log():
+    if not os.path.exists(LOG_FILE):
+        return
+    today = datetime.now(ZoneInfo("Europe/Prague")).strftime("%Y-%m-%d")
+    try:
+        with open(LOG_FILE, "r") as f:
+            first_line = f.readline()
+        if first_line.startswith("[") and today not in first_line:
+            open(LOG_FILE, "w").close()
+    except:
+        pass
+
 def log(message):
     now_str = datetime.now(ZoneInfo("Europe/Prague")).strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"[{now_str}] {message}\n"
@@ -56,32 +62,6 @@ def log(message):
     with open(LOG_FILE, "a") as f:
         f.write(log_line)
 
-# --- Hydrawise API funkce ---
-def HW_raw():
-    """Vrátí celou surovou odpověď z Hydrawise API (customerdetails)."""
-    url = "https://api.hydrawise.com/api/v1/customerdetails.php"
-    params = {"api_key": HW_API_KEY}
-    r = requests.get(url, params=params)
-    r.raise_for_status()
-    return r.json()
-
-def HW_get_zones():
-    """Vrátí seznam všech zón přes endpoint statusschedule.php."""
-    url = "https://api.hydrawise.com/api/v1/statusschedule.php"
-    params = {"api_key": HW_API_KEY}
-    r = requests.get(url, params=params)
-    r.raise_for_status()
-    data = r.json()
-    zones = []
-    for relay in data.get("relays", []):
-        zones.append({
-            "relay_id": relay.get("relay_id"),
-            "relay_name": relay.get("name", "bez názvu"),
-            "running": relay.get("timestr", "neznámý stav")
-        })
-    return zones
-
-# --- ThingsBoard API pro eStudnu ---
 def httpPost(url, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
     data = json.dumps(data)
@@ -124,10 +104,12 @@ class ThingsBoard:
                 return
         except:
             pass
+
         url = f'{self.server}/api/auth/login'
         response = httpPost(url, {}, data={'username': username, 'password': password})
         self.userToken = response["token"]
         save_token(self.userToken)
+
         url = f'{self.server}/api/auth/user'
         response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
         self.customerId = response["customerId"]["id"]
@@ -151,7 +133,6 @@ class ThingsBoard:
         url = f'{self.server}/api/rpc/twoway/{deviceId}'
         return httpPost(url, {'X-Authorization': f"Bearer {self.userToken}"}, {}, data)
 
-# --- Funkce pro eStudnu ---
 def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> float:
     tb = ThingsBoard()
     tb.login(username, password)
@@ -165,7 +146,6 @@ def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: s
     devices = tb.getDevicesByName(f"%{serialNumber}")
     tb.setDeviceOutput(devices[0]["id"]["id"], output, state)
 
-# --- Stav čerpadla ---
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
@@ -176,8 +156,8 @@ def load_state():
     with open(STATE_FILE, "r") as f:
         return json.load(f)
 
-# --- Hlavní logika řízení eStudny ---
 def main():
+    check_and_clear_log()
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
 
@@ -216,7 +196,7 @@ def main():
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
         save_state({"phase": "off", "until": next_until.isoformat()})
-        msg = f"Skončila fáze ON, pauza do {next_until}"
+        msg = f"Skončila fáze ON, přecházím do pauzy – do {next_until}"
         log(msg)
         return msg
 
@@ -236,6 +216,7 @@ def main():
     log(msg)
     return msg
 
+
 # --- Flask server ---
 app = Flask(__name__)
 
@@ -248,23 +229,17 @@ def spustit():
         log(f"Chyba: {e}")
         return f"❌ Chyba: {e}\n"
 
-@app.route("/hw_raw")
-def hw_raw():
+# --- Nový endpoint pro spuštění externího testu ---
+@app.route("/pydrawise")
+def run_pydrawise():
     try:
-        data = HW_raw()
-        return f"<pre>{json.dumps(data, indent=2)}</pre>"
-    except Exception as e:
-        log(f"Chyba HW_raw: {e}")
-        return f"❌ Chyba HW_raw: {e}\n"
-
-@app.route("/hw_zones")
-def hw_zones():
-    try:
-        zones = HW_get_zones()
-        return f"Zóny HW: {json.dumps(zones, indent=2)}\n"
-    except Exception as e:
-        log(f"Chyba HW_zones: {e}")
-        return f"❌ Chyba HW_zones: {e}\n"
+        result = subprocess.run(
+            ["python3", "test_pydrawise.py"],
+            capture_output=True, text=True, check=True
+        )
+        return f"<pre>{result.stdout}</pre>"
+    except subprocess.CalledProcessError as e:
+        return f"❌ Chyba při spouštění test_pydrawise.py:\n<pre>{e.stderr}</pre>"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
