@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from pydrawise import Auth, Hydrawise
 
 HW_USER = "viskot@servis-zahrad.cz"
@@ -6,6 +7,11 @@ HW_PASS = "Poklop1234*"
 
 async def run_test():
     output = []
+
+    # Aktuální čas na serveru
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    output.append(f"🕒 Aktuální čas serveru: {now_str}")
+
     try:
         h = Hydrawise(Auth(HW_USER, HW_PASS))
 
