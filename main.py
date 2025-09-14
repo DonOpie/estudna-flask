@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import os
 from flask import Flask
 
-# --- Konfigurace ---
+# --- Konfigurace eStudna ---
 EMAIL = "viskot@servis-zahrad.cz"
 PASSWORD = "poklop1234"
 SN = "SB824009"
@@ -24,9 +24,11 @@ OFF_DURATION = timedelta(minutes=30)
 STATE_FILE = "stav.json"
 LOG_FILE = "log.txt"
 
-# --- Hydrawise (HW) konfigurace ---
-HW_API_KEY = "d9c8-2212-cd08-6bb5"
-HW_RELAY_ID = 10729434  # Trávník, svorka 1
+# --- Konfigurace Hydrawise (HW) ---
+HW_USER = "viskot@servis-zahrad.cz"
+HW_PASS = "Poklop1234*"
+HW_RELAY_ID = 10729434   # Trávník (svorka 1)
+HW_TOKEN_FILE = "hw_token.json"
 
 # --- Geometrie nádrže (vodorovný válec) ---
 TANK_DIAMETER_CM = 171.0
@@ -47,19 +49,6 @@ def horiz_cyl_volume_l(h_cm: float) -> float:
         A = r*r*math.acos((r - h)/r) - (r - h)*math.sqrt(max(0.0, 2*r*h - h*h))
     return (A * L) / 1000.0
 
-# --- Funkce pro kontrolu a vyčištění logu každý den ---
-def check_and_clear_log():
-    if not os.path.exists(LOG_FILE):
-        return
-    today = datetime.now(ZoneInfo("Europe/Prague")).strftime("%Y-%m-%d")
-    try:
-        with open(LOG_FILE, "r") as f:
-            first_line = f.readline()
-        if first_line.startswith("[") and today not in first_line:
-            open(LOG_FILE, "w").close()
-    except:
-        pass
-
 # --- Logování ---
 def log(message):
     now_str = datetime.now(ZoneInfo("Europe/Prague")).strftime("%Y-%m-%d %H:%M:%S")
@@ -68,7 +57,75 @@ def log(message):
     with open(LOG_FILE, "a") as f:
         f.write(log_line)
 
-# --- HTTP helper funkce ---
+# --- Token pro HW ---
+def HW_load_token():
+    if not os.path.exists(HW_TOKEN_FILE):
+        return None
+    with open(HW_TOKEN_FILE, "r") as f:
+        return json.load(f).get("access_token")
+
+def HW_save_token(token):
+    with open(HW_TOKEN_FILE, "w") as f:
+        json.dump({"access_token": token}, f)
+
+def HW_login(username, password):
+    """Přihlášení přes OAuth2, získá access_token."""
+    url = "https://api.hydrawise.com/oauth/token"
+    data = {
+        "grant_type": "password",
+        "username": username,
+        "password": password
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    r = requests.post(url, headers=headers, data=data)
+    r.raise_for_status()
+    token = r.json().get("access_token")
+    if not token:
+        raise Exception("Nepodařilo se získat HW access_token")
+    HW_save_token(token)
+    log("HW: získán nový access_token")
+    return token
+
+def HW_get_token():
+    token = HW_load_token()
+    if token:
+        return token
+    return HW_login(HW_USER, HW_PASS)
+
+# --- Ovládání HW ---
+def HW_runzone(relay_id=HW_RELAY_ID, duration=900):
+    url = "https://api.hydrawise.com/v2/relay/run"
+    token = HW_get_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    data = {"relay_id": relay_id, "time": duration}
+    r = requests.post(url, headers=headers, json=data)
+    if r.status_code == 401:  # token expiroval
+        token = HW_login(HW_USER, HW_PASS)
+        headers["Authorization"] = f"Bearer {token}"
+        r = requests.post(url, headers=headers, json=data)
+    r.raise_for_status()
+    return r.json()
+
+def HW_stopzone(relay_id=HW_RELAY_ID):
+    url = "https://api.hydrawise.com/v2/relay/stop"
+    token = HW_get_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    data = {"relay_id": relay_id}
+    r = requests.post(url, headers=headers, json=data)
+    if r.status_code == 401:  # token expiroval
+        token = HW_login(HW_USER, HW_PASS)
+        headers["Authorization"] = f"Bearer {token}"
+        r = requests.post(url, headers=headers, json=data)
+    r.raise_for_status()
+    return r.json()
+
+# --- ThingsBoard API pro eStudnu ---
 def httpPost(url, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
     data = json.dumps(data)
@@ -86,48 +143,6 @@ def httpGet(url, header={}, params={}):
     r.raise_for_status()
     return r.json()
 
-# --- Hydrawise API funkce ---
-def HW_runzone(relay_id=HW_RELAY_ID, duration=900):
-    """Spustí zónu na zadanou dobu (sekundy) přes REST API 2.0."""
-    url = "https://api.hydrawise.com/v2/relay/run"
-    headers = {
-        "Authorization": f"Bearer {HW_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {"relay_id": relay_id, "time": duration}
-    r = requests.post(url, headers=headers, json=data)
-    r.raise_for_status()
-    return r.json()
-
-def HW_stopzone(relay_id=HW_RELAY_ID):
-    """Zastaví konkrétní zónu přes REST API 2.0."""
-    url = "https://api.hydrawise.com/v2/relay/stop"
-    headers = {
-        "Authorization": f"Bearer {HW_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {"relay_id": relay_id}
-    r = requests.post(url, headers=headers, json=data)
-    r.raise_for_status()
-    return r.json()
-
-def HW_get_zones():
-    """Vrátí seznam všech zón přes endpoint statusschedule.php."""
-    url = "https://api.hydrawise.com/api/v1/statusschedule.php"
-    params = {"api_key": HW_API_KEY}
-    r = requests.get(url, params=params)
-    r.raise_for_status()
-    data = r.json()
-    zones = []
-    for relay in data.get("relays", []):
-        zones.append({
-            "relay_id": relay.get("relay_id"),
-            "relay_name": relay.get("name", "bez názvu"),
-            "running": relay.get("timestr", "neznámý stav")
-        })
-    return zones
-
-# --- Správa tokenu ---
 def load_token():
     if not os.path.exists(TOKEN_FILE):
         return None
@@ -138,7 +153,6 @@ def save_token(token):
     with open(TOKEN_FILE, "w") as f:
         json.dump({"token": token}, f)
 
-# --- Třída ThingsBoard ---
 class ThingsBoard:
     def __init__(self):
         self.server = 'https://cml.seapraha.cz'
@@ -154,12 +168,10 @@ class ThingsBoard:
                 return
         except:
             pass
-
         url = f'{self.server}/api/auth/login'
         response = httpPost(url, {}, data={'username': username, 'password': password})
         self.userToken = response["token"]
         save_token(self.userToken)
-
         url = f'{self.server}/api/auth/user'
         response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
         self.customerId = response["customerId"]["id"]
@@ -183,7 +195,7 @@ class ThingsBoard:
         url = f'{self.server}/api/rpc/twoway/{deviceId}'
         return httpPost(url, {'X-Authorization': f"Bearer {self.userToken}"}, {}, data)
 
-# --- Funkce pro čtení hladiny ---
+# --- Funkce pro eStudnu ---
 def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> float:
     tb = ThingsBoard()
     tb.login(username, password)
@@ -208,9 +220,8 @@ def load_state():
     with open(STATE_FILE, "r") as f:
         return json.load(f)
 
-# --- Hlavní logika řízení ---
+# --- Hlavní logika řízení eStudny ---
 def main():
-    check_and_clear_log()
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
 
@@ -237,35 +248,35 @@ def main():
     if level_cm >= HIGH_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         save_state({"phase": "off", "until": None})
-        msg = f"Hladina {level_cm:.1f} cm je dostatečná, čerpadlo VYPNUTO. | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        msg = f"Hladina {level_cm:.1f} cm je dostatečná, čerpadlo VYPNUTO."
         log(msg)
         return msg
 
     if state["phase"] == "on" and until and now < until:
-        msg = f"Čerpadlo běží do {until} – Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        msg = f"Čerpadlo běží do {until}"
         log(msg)
         return msg
     elif state["phase"] == "on":
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
         save_state({"phase": "off", "until": next_until.isoformat()})
-        msg = f"Skončila fáze ON, přecházím do pauzy – do {next_until}. | Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        msg = f"Skončila fáze ON, přecházím do pauzy – do {next_until}"
         log(msg)
         return msg
 
     if state["phase"] == "off" and until and now < until:
-        msg = f"Pauza do {until} – Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        msg = f"Pauza do {until}"
         log(msg)
         return msg
     elif state["phase"] == "off" and level_cm < LOW_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
         save_state({"phase": "on", "until": next_until.isoformat()})
-        msg = f"Hladina nízká, čerpadlo ZAPNUTO do {next_until}. | Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+        msg = f"Hladina nízká, čerpadlo ZAPNUTO do {next_until}"
         log(msg)
         return msg
 
-    msg = f"Čekám na pokles hladiny nebo konec pauzy – Hladina: {level_cm:.1f} cm | Objem: {volume_l:,.0f} l ({percent:.1f} %)"
+    msg = f"Čekám na pokles hladiny nebo konec pauzy"
     log(msg)
     return msg
 
@@ -280,15 +291,6 @@ def spustit():
     except Exception as e:
         log(f"Chyba: {e}")
         return f"❌ Chyba: {e}\n"
-
-@app.route("/hw_zones")
-def hw_zones():
-    try:
-        zones = HW_get_zones()
-        return f"Zóny HW: {json.dumps(zones, indent=2)}\n"
-    except Exception as e:
-        log(f"Chyba HW: {e}")
-        return f"❌ Chyba HW: {e}\n"
 
 @app.route("/hw_start")
 def hw_start():
