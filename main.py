@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import os
 from flask import Flask
 import asyncio
+from pydrawise import Auth, Hydrawise
 
 # --- Konfigurace eStudna ---
 EMAIL = "viskot@servis-zahrad.cz"
@@ -28,16 +29,19 @@ LOG_FILE = "log.txt"
 # --- Geometrie nádrže ---
 TANK_DIAMETER_CM = 171.0
 TANK_LENGTH_CM   = 245.8
-LEVEL_OFFSET_CM  = 10.0     # hloubka sondy ode dna
+LEVEL_OFFSET_CM  = 10.0
 CAPACITY_L       = 5000.0
-
 R_CM = TANK_DIAMETER_CM / 2.0
 
 # --- Konfigurace Hydrawise ---
-HW_API_KEY = "d9c8-2212-cd08-6bb5"
+HW_EMAIL = "viskot@servis-zahrad.cz"
+HW_PASSWORD = "Poklop1234*"
 HW_ZONE_NAME = "Trávník"
 HW_START_LEVEL = 149  # cm
 HW_STOP_LEVEL  = 133  # cm
+
+auth = Auth(HW_EMAIL, HW_PASSWORD)
+hw = Hydrawise(auth)
 
 # --- Funkce objemu ve válci ---
 def horiz_cyl_volume_l(h_cm: float) -> float:
@@ -51,7 +55,7 @@ def horiz_cyl_volume_l(h_cm: float) -> float:
         A = r*r*math.acos((r - h)/r) - (r - h)*math.sqrt(max(0.0, 2*r*h - h*h))
     return (A * L) / 1000.0
 
-# --- Log ---
+# --- Logování ---
 def log(message):
     now_str = datetime.now(ZoneInfo("Europe/Prague")).strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"[{now_str}] {message}\n"
@@ -59,7 +63,7 @@ def log(message):
     with open(LOG_FILE, "a") as f:
         f.write(log_line)
 
-# --- HTTP helper ---
+# --- HTTP pomocné funkce ---
 def httpPost(url, header={}, params={}, data={}):
     headers = {"Content-Type": "application/json", "Accept": "application/json", **header}
     data = json.dumps(data)
@@ -73,7 +77,7 @@ def httpGet(url, header={}, params={}):
     r.raise_for_status()
     return r.json()
 
-# --- Token správa ---
+# --- Správa tokenu ---
 def load_token():
     if not os.path.exists(TOKEN_FILE):
         return None
@@ -84,7 +88,7 @@ def save_token(token):
     with open(TOKEN_FILE, "w") as f:
         json.dump({"token": token}, f)
 
-# --- ThingsBoard ---
+# --- ThingsBoard komunikace ---
 class ThingsBoard:
     def __init__(self):
         self.server = 'https://cml.seapraha.cz'
@@ -148,44 +152,39 @@ def save_state(state):
 
 def load_state():
     if not os.path.exists(STATE_FILE):
-        return {"phase": "off", "until": None}
+        return {"phase": "off", "until": None, "hw_phase": "idle"}
     with open(STATE_FILE, "r") as f:
         return json.load(f)
 
-# --- Hydrawise API (GraphQL přes pydrawise) ---
-from pydrawise import Auth, Hydrawise
-
-HW_EMAIL = "viskot@servis-zahrad.cz"
-HW_PASSWORD = "Poklop1234*"
-
-auth = Auth(HW_EMAIL, HW_PASSWORD)
-hw = Hydrawise(auth)
-
-
-async def HW_control(level_cm: float):
-    """Spustí nebo zastaví zónu podle hladiny."""
-    result_lines = ["🌊 Hydrawise:"]
-
+# --- Hydrawise ovládání (jednorázové spouštění/vypínání) ---
+async def HW_control(level_cm: float, state: dict):
+    lines = ["🌊 Hydrawise:"]
     controllers = await hw.get_controllers(fetch_zones=True)
     ctrl = controllers[0]
     zone = next((z for z in ctrl.zones if z.name.strip() == HW_ZONE_NAME), None)
 
     if not zone:
-        result_lines.append("❌ Zóna Trávník nenalezena v Hydrawise")
-        return "\n".join(result_lines)
+        lines.append("❌ Zóna Trávník nenalezena v Hydrawise")
+        return "\n".join(lines), state
 
-    if level_cm >= HW_START_LEVEL:
+    hw_phase = state.get("hw_phase", "idle")
+
+    if level_cm >= HW_START_LEVEL and hw_phase != "on":
         await hw.start_zone(zone, custom_run_duration=3600)
-        result_lines.append(f"▶️ Spuštěna zóna {zone.name} (hladina {level_cm:.1f} cm ≥ {HW_START_LEVEL})")
-    elif level_cm <= HW_STOP_LEVEL:
+        state["hw_phase"] = "on"
+        lines.append(f"▶️ Spuštěna zóna {zone.name} (hladina {level_cm:.1f} cm ≥ {HW_START_LEVEL})")
+
+    elif level_cm <= HW_STOP_LEVEL and hw_phase == "on":
         await hw.stop_zone(zone)
-        result_lines.append(f"⏹️ Zastavena zóna {zone.name} (hladina {level_cm:.1f} cm ≤ {HW_STOP_LEVEL})")
+        state["hw_phase"] = "off"
+        lines.append(f"⏹️ Zastavena zóna {zone.name} (hladina {level_cm:.1f} cm ≤ {HW_STOP_LEVEL})")
+
     else:
-        result_lines.append(f"ℹ️ Beze změny (hladina {level_cm:.1f} cm)")
+        lines.append(f"ℹ️ Beze změny (hladina {level_cm:.1f} cm, režim {hw_phase})")
 
-    return "\n".join(result_lines)
+    return "\n".join(lines), state
 
-# --- Hlavní logika ---
+# --- Hlavní logika eStudna ---
 def main():
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
@@ -193,50 +192,48 @@ def main():
     level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
     h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM)
     volume_l = horiz_cyl_volume_l(h_eff)
-    cap_l = min(volume_l, CAPACITY_L)
-    percent = (cap_l / CAPACITY_L) * 100.0
+    percent = min((volume_l / CAPACITY_L) * 100.0, 100.0)
 
     lines = ["✅ Spuštěno:"]
     lines.append(f"   Hladina: {level_cm:.1f} cm")
     lines.append(f"   Objem: {volume_l:,.0f} l ({percent:.1f} %)")
 
     in_allowed_time = START_HOUR <= hour < END_HOUR if START_HOUR < END_HOUR else hour >= START_HOUR or hour < END_HOUR
-
     if not in_allowed_time:
         lines.append("   Mimo povolený čas (čerpadlo nečinné)")
-        return "\n".join(lines), level_cm
+        return "\n".join(lines), level_cm, load_state()
 
     state = load_state()
     until = datetime.fromisoformat(state["until"]) if state["until"] else None
 
     if level_cm >= HIGH_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
-        save_state({"phase": "off", "until": None})
+        save_state({**state, "phase": "off", "until": None})
         lines.append("   Čerpadlo VYPNUTO (hladina ≥ HIGH_LEVEL)")
-        return "\n".join(lines), level_cm
+        return "\n".join(lines), level_cm, state
 
     if state["phase"] == "on" and until and now < until:
         lines.append(f"   Čerpadlo běží do {until}")
-        return "\n".join(lines), level_cm
+        return "\n".join(lines), level_cm, state
     elif state["phase"] == "on":
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
-        save_state({"phase": "off", "until": next_until.isoformat()})
+        save_state({**state, "phase": "off", "until": next_until.isoformat()})
         lines.append(f"   Skončila fáze ON, pauza do {next_until}")
-        return "\n".join(lines), level_cm
+        return "\n".join(lines), level_cm, state
 
     if state["phase"] == "off" and until and now < until:
         lines.append(f"   Pauza do {until}")
-        return "\n".join(lines), level_cm
+        return "\n".join(lines), level_cm, state
     elif state["phase"] == "off" and level_cm < LOW_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
-        save_state({"phase": "on", "until": next_until.isoformat()})
+        save_state({**state, "phase": "on", "until": next_until.isoformat()})
         lines.append(f"   Čerpadlo ZAPNUTO do {next_until}")
-        return "\n".join(lines), level_cm
+        return "\n".join(lines), level_cm, state
 
     lines.append("   Čekám na pokles hladiny nebo konec pauzy")
-    return "\n".join(lines), level_cm
+    return "\n".join(lines), level_cm, state
 
 # --- Flask server ---
 app = Flask(__name__)
@@ -244,8 +241,9 @@ app = Flask(__name__)
 @app.route("/")
 def spustit():
     try:
-        est_text, level_cm = main()
-        hw_text = asyncio.run(HW_control(level_cm))
+        est_text, level_cm, state = main()
+        hw_text, state = asyncio.run(HW_control(level_cm, state))
+        save_state(state)
         return f"<pre>{est_text}\n\n{hw_text}</pre>"
     except Exception as e:
         log(f"Chyba: {e}")
