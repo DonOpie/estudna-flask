@@ -10,7 +10,7 @@ from pydrawise import Auth, Hydrawise
 
 # --- Konfigurace eStudna ---
 EMAIL = "viskot@servis-zahrad.cz"
-PASSWORD = "poklop1234"
+PASSWORD = "krakonos1712"
 SN = "SB824009"
 TOKEN_FILE = "token.json"
 
