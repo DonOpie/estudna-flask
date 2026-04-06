@@ -7,10 +7,11 @@ import os
 from flask import Flask
 import asyncio
 from pydrawise import Auth, Hydrawise
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- Konfigurace eStudna ---
 EMAIL = "viskot@servis-zahrad.cz"
-PASSWORD = "krakonos1712"
+PASSWORD = "poklop1234"
 SN = "SB824009"
 TOKEN_FILE = "token.json"
 
@@ -156,7 +157,7 @@ def load_state():
     with open(STATE_FILE, "r") as f:
         return json.load(f)
 
-# --- Hydrawise ovládání (jednorázové spouštění/vypínání) ---
+# --- Hydrawise ovládání ---
 async def HW_control(level_cm: float, state: dict):
     lines = ["🌊 Hydrawise:"]
     controllers = await hw.get_controllers(fetch_zones=True)
@@ -235,19 +236,41 @@ def main():
     lines.append("   Čekám na pokles hladiny nebo konec pauzy")
     return "\n".join(lines), level_cm, state
 
+
+# --- Scheduler ---
+last_result = "Zatím nespuštěno"
+last_run = None
+
+def run_job():
+    global last_result, last_run
+    try:
+        est_text, level_cm, state = main()
+        hw_text, state = asyncio.run(HW_control(level_cm, state))
+        save_state(state)
+        last_result = f"{est_text}\n\n{hw_text}"
+    except Exception as e:
+        log(f"Chyba: {e}")
+        last_result = f"❌ Chyba: {e}"
+    last_run = datetime.now(ZoneInfo("Europe/Prague"))
+
+scheduler = BackgroundScheduler(timezone="Europe/Prague")
+scheduler.add_job(run_job, 'interval', minutes=1)
+scheduler.start()
+run_job()  # spusť hned při startu
+
+
 # --- Flask server ---
 app = Flask(__name__)
 
 @app.route("/")
 def spustit():
-    try:
-        est_text, level_cm, state = main()
-        hw_text, state = asyncio.run(HW_control(level_cm, state))
-        save_state(state)
-        return f"<pre>{est_text}\n\n{hw_text}</pre>"
-    except Exception as e:
-        log(f"Chyba: {e}")
-        return f"<pre>❌ Chyba: {e}</pre>"
+    ran = last_run.strftime('%Y-%m-%d %H:%M:%S') if last_run else "nikdy"
+    return f"<pre>{last_result}\n\nPosledni spusteni: {ran}</pre>"
+
+@app.route("/trigger")
+def trigger():
+    run_job()
+    return spustit()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
