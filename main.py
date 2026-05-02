@@ -15,11 +15,16 @@ PASSWORD = "poklop1234"
 SN = "SB824009"
 TOKEN_FILE = "token.json"
 
+# --- Home Assistant API (pro kontrolu manuálního override) ---
+HA_URL = "http://192.168.5.249:8123"
+HA_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiI2YWIxMzFjZDNmYjA0YjRmODI0NGI3NDBhYTMwZWZlZCIsImlhdCI6MTc3NTU3MDYxMywiZXhwIjoyMDkwOTMwNjEzfQ.G_T0-_sSE9TJj47nZBbYqA65iLZjLiXmW1zVaJSgo38"
+HA_OVERRIDE_ENTITY = "input_boolean.studna_manual_override"
+
 START_HOUR = 0
 END_HOUR = 6
 
-LOW_LEVEL = 70
-HIGH_LEVEL = 80
+LOW_LEVEL = 80
+HIGH_LEVEL = 90
 
 ON_DURATION = timedelta(minutes=30)
 OFF_DURATION = timedelta(minutes=30)
@@ -55,6 +60,20 @@ def horiz_cyl_volume_l(h_cm: float) -> float:
     else:
         A = r*r*math.acos((r - h)/r) - (r - h)*math.sqrt(max(0.0, 2*r*h - h*h))
     return (A * L) / 1000.0
+
+# --- Manuální override check ---
+def is_manual_override() -> bool:
+    """Vrátí True pokud je v HA aktivní manuální override – Flask pak nic nemění."""
+    try:
+        r = requests.get(
+            f"{HA_URL}/api/states/{HA_OVERRIDE_ENTITY}",
+            headers={"Authorization": f"Bearer {HA_TOKEN}"},
+            timeout=5,
+        )
+        return r.json().get("state") == "on"
+    except Exception as e:
+        log(f"WARN: nelze zkontrolovat HA override: {e}")
+        return False  # při chybě pokračujeme normálně
 
 # --- Logování ---
 def log(message):
@@ -189,6 +208,17 @@ async def HW_control(level_cm: float, state: dict):
 def main():
     now = datetime.now(ZoneInfo("Europe/Prague"))
     hour = now.hour
+
+    if is_manual_override():
+        level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
+        h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM)
+        volume_l = horiz_cyl_volume_l(h_eff)
+        percent = min((volume_l / CAPACITY_L) * 100.0, 100.0)
+        lines = ["✅ Spuštěno:"]
+        lines.append(f"   Hladina: {level_cm:.1f} cm")
+        lines.append(f"   Objem: {volume_l:,.0f} l ({percent:.1f} %)")
+        lines.append("   ⏸ MANUÁLNÍ OVERRIDE aktivní – Flask nečinný")
+        return "\n".join(lines), level_cm, load_state()
 
     level_cm = eStudna_GetWaterLevel(EMAIL, PASSWORD, SN)
     h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM)
