@@ -270,14 +270,30 @@ def main():
 # --- Scheduler ---
 last_result = "Zatím nespuštěno"
 last_run = None
+last_data = {}
 
 def run_job():
-    global last_result, last_run
+    global last_result, last_run, last_data
     try:
         est_text, level_cm, state = main()
         hw_text, state = asyncio.run(HW_control(level_cm, state))
         save_state(state)
         last_result = f"{est_text}\n\n{hw_text}"
+        h_eff = max(0.0, level_cm - LEVEL_OFFSET_CM)
+        volume_l = horiz_cyl_volume_l(h_eff)
+        percent = min((volume_l / CAPACITY_L) * 100.0, 100.0)
+        now_local = datetime.now(ZoneInfo("Europe/Prague"))
+        in_time = (START_HOUR <= now_local.hour < END_HOUR) if START_HOUR < END_HOUR else (now_local.hour >= START_HOUR or now_local.hour < END_HOUR)
+        last_data.update({
+            "hladina_cm": round(level_cm, 1),
+            "objem_l": round(volume_l, 0),
+            "procent": round(percent, 1),
+            "cerpadlo": state.get("phase", "off"),
+            "cerpadlo_do": state.get("until"),
+            "v_casovem_okne": in_time,
+            "hydrawise": state.get("hw_phase", "idle"),
+            "aktualizovano": now_local.strftime("%Y-%m-%d %H:%M:%S")
+        })
     except Exception as e:
         log(f"Chyba: {e}")
         last_result = f"❌ Chyba: {e}"
@@ -301,6 +317,11 @@ def spustit():
 def trigger():
     run_job()
     return spustit()
+
+@app.route("/api/status")
+def api_status():
+    from flask import jsonify
+    return jsonify(last_data)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
