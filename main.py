@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- Konfigurace eStudna ---
 EMAIL = "viskot@servis-zahrad.cz"
-PASSWORD = "krakonos1712"
+PASSWORD = "poklop1234"
 SN = "SB824009"
 TOKEN_FILE = "token.json"
 
