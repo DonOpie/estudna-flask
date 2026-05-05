@@ -98,15 +98,22 @@ def httpGet(url, header={}, params={}):
     return r.json()
 
 # --- Správa tokenu ---
+TOKEN_BUFFER = timedelta(minutes=5)
+
 def load_token():
     if not os.path.exists(TOKEN_FILE):
         return None
-    with open(TOKEN_FILE, "r") as f:
-        return json.load(f).get("token")
+    with open(TOKEN_FILE) as f:
+        data = json.load(f)
+    expires = datetime.fromisoformat(data["expires"])
+    if datetime.now(ZoneInfo("Europe/Prague")) < expires - TOKEN_BUFFER:
+        return data["token"]
+    return None
 
 def save_token(token):
+    expires = datetime.now(ZoneInfo("Europe/Prague")) + timedelta(hours=2)
     with open(TOKEN_FILE, "w") as f:
-        json.dump({"token": token}, f)
+        json.dump({"token": token, "expires": expires.isoformat()}, f)
 
 # --- ThingsBoard komunikace ---
 class ThingsBoard:
@@ -115,24 +122,25 @@ class ThingsBoard:
         self.userToken = load_token()
         self.customerId = None
 
-    def login(self, username: str, password: str):
-        try:
-            if self.userToken:
-                url = f'{self.server}/api/auth/user'
-                response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
-                self.customerId = response["customerId"]["id"]
-                return
-        except:
-            pass
-
+    def _fresh_login(self, username: str, password: str):
         url = f'{self.server}/api/auth/login'
         response = httpPost(url, {}, data={'username': username, 'password': password})
         self.userToken = response["token"]
         save_token(self.userToken)
-
         url = f'{self.server}/api/auth/user'
         response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
         self.customerId = response["customerId"]["id"]
+
+    def login(self, username: str, password: str):
+        if self.userToken:
+            try:
+                url = f'{self.server}/api/auth/user'
+                response = httpGet(url, {'X-Authorization': f"Bearer {self.userToken}"})
+                self.customerId = response["customerId"]["id"]
+                return
+            except:
+                pass
+        self._fresh_login(username, password)
 
     def getDevicesByName(self, name: str):
         url = f'{self.server}/api/customer/{self.customerId}/devices'
