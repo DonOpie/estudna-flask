@@ -239,7 +239,7 @@ def main():
 
     if level_cm >= HIGH_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
-        save_state({**state, "phase": "off", "until": None})
+        state = {**state, "phase": "off", "until": None}
         lines.append("   Čerpadlo VYPNUTO (hladina ≥ HIGH_LEVEL)")
         return "\n".join(lines), level_cm, state
 
@@ -249,7 +249,7 @@ def main():
     elif state["phase"] == "on":
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
-        save_state({**state, "phase": "off", "until": next_until.isoformat()})
+        state = {**state, "phase": "off", "until": next_until.isoformat()}
         lines.append(f"   Skončila fáze ON, pauza do {next_until}")
         return "\n".join(lines), level_cm, state
 
@@ -259,7 +259,7 @@ def main():
     elif state["phase"] == "off" and level_cm < LOW_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
-        save_state({**state, "phase": "on", "until": next_until.isoformat()})
+        state = {**state, "phase": "on", "until": next_until.isoformat()}
         lines.append(f"   Čerpadlo ZAPNUTO do {next_until}")
         return "\n".join(lines), level_cm, state
 
