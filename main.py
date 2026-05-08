@@ -1,6 +1,7 @@
 import requests
 import json
 import math
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
@@ -8,6 +9,8 @@ from flask import Flask
 import asyncio
 from pydrawise import Auth, Hydrawise
 from apscheduler.schedulers.background import BackgroundScheduler
+
+_job_lock = threading.Lock()
 
 # --- Konfigurace eStudna ---
 EMAIL = "viskot@servis-zahrad.cz"
@@ -167,6 +170,13 @@ def eStudna_GetWaterLevel(username: str, password: str, serialNumber: str) -> fl
     values = tb.getDeviceValues(devices[0]["id"]["id"], "ain1")
     return float(values["ain1"][0]["value"]) * 100  # cm
 
+def eStudna_GetDout1(username: str, password: str, serialNumber: str) -> bool:
+    tb = ThingsBoard()
+    tb.login(username, password)
+    devices = tb.getDevicesByName(f"%{serialNumber}")
+    values = tb.getDeviceValues(devices[0]["id"]["id"], "dout1")
+    return int(values["dout1"][0]["value"]) == 1
+
 def eStudna_SetOutput(username: str, password: str, serialNumber: str, output: str, state: bool):
     tb = ThingsBoard()
     tb.login(username, password)
@@ -249,29 +259,41 @@ def main():
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         state = {**state, "phase": "off", "until": None}
         lines.append("   Čerpadlo VYPNUTO (hladina ≥ HIGH_LEVEL)")
+        log(f"HIGH_LEVEL dosažen ({level_cm:.1f} cm) – čerpadlo vypnuto")
         return "\n".join(lines), level_cm, state
 
     if state["phase"] == "on" and until and now < until:
-        lines.append(f"   Čerpadlo běží do {until}")
+        lines.append(f"   Čerpadlo běží do {until.strftime('%H:%M:%S')}")
         return "\n".join(lines), level_cm, state
     elif state["phase"] == "on":
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
         next_until = now + OFF_DURATION
         state = {**state, "phase": "off", "until": next_until.isoformat()}
-        lines.append(f"   Skončila fáze ON, pauza do {next_until}")
+        lines.append(f"   Skončila fáze ON, pauza do {next_until.strftime('%H:%M:%S')}")
+        log(f"ON fáze skončila ({level_cm:.1f} cm) – čerpadlo vypnuto, pauza do {next_until.strftime('%H:%M:%S')}")
         return "\n".join(lines), level_cm, state
 
     if state["phase"] == "off" and until and now < until:
-        lines.append(f"   Pauza do {until}")
+        try:
+            if eStudna_GetDout1(EMAIL, PASSWORD, SN):
+                eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
+                log(f"PAUZA: firmware zapnul čerpadlo samovolně – vynucuji vypnutí")
+                lines.append(f"   Pauza do {until.strftime('%H:%M:%S')} (firmware override potlačen)")
+            else:
+                lines.append(f"   Pauza do {until.strftime('%H:%M:%S')}")
+        except Exception as e:
+            log(f"WARN: nelze zkontrolovat dout1: {e}")
+            lines.append(f"   Pauza do {until.strftime('%H:%M:%S')}")
         return "\n".join(lines), level_cm, state
     elif state["phase"] == "off" and level_cm < LOW_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
         next_until = now + ON_DURATION
         state = {**state, "phase": "on", "until": next_until.isoformat()}
-        lines.append(f"   Čerpadlo ZAPNUTO do {next_until}")
+        lines.append(f"   Čerpadlo ZAPNUTO do {next_until.strftime('%H:%M:%S')}")
+        log(f"LOW_LEVEL ({level_cm:.1f} cm < {LOW_LEVEL}) – čerpadlo zapnuto do {next_until.strftime('%H:%M:%S')}")
         return "\n".join(lines), level_cm, state
 
-    lines.append("   Čekám na pokles hladiny nebo konec pauzy")
+    lines.append(f"   Hladina OK ({level_cm:.1f} cm) – čekám na pokles pod {LOW_LEVEL} cm")
     return "\n".join(lines), level_cm, state
 
 
@@ -282,6 +304,9 @@ last_data = {}
 
 def run_job():
     global last_result, last_run, last_data
+    if not _job_lock.acquire(blocking=False):
+        log("WARN: předchozí běh ještě neskončil, přeskakuji")
+        return
     try:
         est_text, level_cm, state = main()
         hw_text, state = asyncio.run(HW_control(level_cm, state))
@@ -305,10 +330,12 @@ def run_job():
     except Exception as e:
         log(f"Chyba: {e}")
         last_result = f"❌ Chyba: {e}"
+    finally:
+        _job_lock.release()
     last_run = datetime.now(ZoneInfo("Europe/Prague"))
 
 scheduler = BackgroundScheduler(timezone="Europe/Prague")
-scheduler.add_job(run_job, 'interval', minutes=1)
+scheduler.add_job(run_job, 'interval', minutes=1, max_instances=1, coalesce=True)
 scheduler.start()
 run_job()  # spusť hned při startu
 
