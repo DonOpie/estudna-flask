@@ -27,7 +27,7 @@ START_HOUR = 0
 END_HOUR = 6
 
 LOW_LEVEL = 70
-HIGH_LEVEL = 80
+HIGH_LEVEL = 90
 
 ON_DURATION = timedelta(minutes=30)
 OFF_DURATION = timedelta(minutes=30)
