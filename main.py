@@ -274,16 +274,7 @@ def main():
         return "\n".join(lines), level_cm, state
 
     if state["phase"] == "off" and until and now < until:
-        try:
-            if eStudna_GetDout1(EMAIL, PASSWORD, SN):
-                eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", False)
-                log(f"PAUZA: firmware zapnul čerpadlo samovolně – vynucuji vypnutí")
-                lines.append(f"   Pauza do {until.strftime('%H:%M:%S')} (firmware override potlačen)")
-            else:
-                lines.append(f"   Pauza do {until.strftime('%H:%M:%S')}")
-        except Exception as e:
-            log(f"WARN: nelze zkontrolovat dout1: {e}")
-            lines.append(f"   Pauza do {until.strftime('%H:%M:%S')}")
+        lines.append(f"   Pauza do {until.strftime('%H:%M:%S')}")
         return "\n".join(lines), level_cm, state
     elif state["phase"] == "off" and level_cm < LOW_LEVEL:
         eStudna_SetOutput(EMAIL, PASSWORD, SN, "OUT1", True)
